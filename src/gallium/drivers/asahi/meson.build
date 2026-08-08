@@ -14,8 +14,15 @@ files_asahi = files(
   'agx_query.c',
   'agx_state.c',
   'agx_streamout.c',
+  'agx_sync.c',
   'agx_uniforms.c',
 )
+
+asahi_deps = [idep_nir, idep_mesautil, idep_agx_pack, idep_libagx,
+              idep_libagx_shaders_h]
+if system_has_kms_drm
+  asahi_deps += dep_libdrm
+endif
 
 libasahi = static_library(
   'asahi',
@@ -23,7 +30,7 @@ libasahi = static_library(
   include_directories : [inc_gallium_aux, inc_gallium, inc_include, inc_src, inc_asahi, inc_virtio_gpu, inc_virtio_vdrm],
   c_args : [c_msvc_compat_args, '-Wno-c2x-extensions'],
   gnu_symbol_visibility : 'hidden',
-  dependencies : [idep_nir, idep_mesautil, idep_agx_pack, dep_libdrm, idep_libagx, idep_libagx_shaders_h],
+  dependencies : asahi_deps,
 )
 
 driver_asahi = declare_dependency(

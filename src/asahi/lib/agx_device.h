@@ -6,7 +6,6 @@
 #pragma once
 
 #include <stdint.h>
-#include <xf86drm.h>
 #include "drm-uapi/asahi_drm.h"
 #include "util/ralloc.h"
 #include "util/simple_mtx.h"

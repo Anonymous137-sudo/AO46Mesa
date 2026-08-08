@@ -10,10 +10,11 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include <xf86drm.h>
+#include <unistd.h>
 
 #include "agx_fence.h"
 #include "agx_state.h"
+#include "agx_sync.h"
 
 #include "util/libsync.h"
 #include "util/os_time.h"
@@ -28,7 +29,7 @@ agx_fence_reference(struct pipe_screen *pscreen, struct pipe_fence_handle **ptr,
 
    if (pipe_reference(old ? &old->reference : NULL,
                       fence ? &fence->reference : NULL)) {
-      drmSyncobjDestroy(dev->fd, old->syncobj);
+      agx_sync_destroy(dev, old->syncobj);
       free(old);
    }
 
@@ -49,8 +50,8 @@ agx_fence_finish(struct pipe_screen *pscreen, struct pipe_context *ctx,
    if (abs_timeout == OS_TIMEOUT_INFINITE)
       abs_timeout = INT64_MAX;
 
-   ret = drmSyncobjWait(dev->fd, &fence->syncobj, 1, abs_timeout,
-                        DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL, NULL);
+   ret = agx_sync_wait(dev, &fence->syncobj, 1, abs_timeout,
+                       AGX_SYNC_WAIT_ALL, NULL);
 
    assert(ret >= 0 || ret == -ETIME);
    fence->signaled = (ret >= 0);
@@ -63,7 +64,7 @@ agx_fence_get_fd(struct pipe_screen *screen, struct pipe_fence_handle *f)
    struct agx_device *dev = agx_device(screen);
    int fd = -1;
 
-   int ret = drmSyncobjExportSyncFile(dev->fd, f->syncobj, &fd);
+   int ret = agx_sync_export_fd(dev, f->syncobj, &fd);
    assert(ret >= 0);
    assert(fd >= 0);
 
@@ -81,20 +82,20 @@ agx_fence_from_fd(struct agx_context *ctx, int fd, enum pipe_fd_type type)
       return NULL;
 
    if (type == PIPE_FD_TYPE_NATIVE_SYNC) {
-      ret = drmSyncobjCreate(dev->fd, 0, &f->syncobj);
+      ret = agx_sync_create(dev, 0, &f->syncobj);
       if (ret) {
          agx_msg("create syncobj failed\n");
          goto err_free_fence;
       }
 
-      ret = drmSyncobjImportSyncFile(dev->fd, f->syncobj, fd);
+      ret = agx_sync_import_fd(dev, f->syncobj, fd);
       if (ret) {
          agx_msg("import syncfile failed\n");
          goto err_destroy_syncobj;
       }
    } else {
       assert(type == PIPE_FD_TYPE_SYNCOBJ);
-      ret = drmSyncobjFDToHandle(dev->fd, fd, &f->syncobj);
+      ret = agx_sync_fd_to_handle(dev, fd, &f->syncobj);
       if (ret) {
          agx_msg("import syncobj FD failed\n");
          goto err_free_fence;
@@ -106,7 +107,7 @@ agx_fence_from_fd(struct agx_context *ctx, int fd, enum pipe_fd_type type)
    return f;
 
 err_destroy_syncobj:
-   drmSyncobjDestroy(dev->fd, f->syncobj);
+   agx_sync_destroy(dev, f->syncobj);
 err_free_fence:
    free(f);
    return NULL;
@@ -123,7 +124,7 @@ agx_fence_create(struct agx_context *ctx)
     * (HandleToFD/FDToHandle just gives you another syncobj ID for the
     * same syncobj).
     */
-   ret = drmSyncobjExportSyncFile(dev->fd, ctx->syncobj, &fd);
+   ret = agx_sync_export_fd(dev, ctx->syncobj, &fd);
    assert(ret >= 0 && fd != -1 && "export failed");
    if (ret || fd == -1) {
       agx_msg("export failed\n");
@@ -155,7 +156,7 @@ agx_fence_server_sync(struct pipe_context *pctx, struct pipe_fence_handle *f,
    int fd = -1, ret;
    assert(!value);
 
-   ret = drmSyncobjExportSyncFile(dev->fd, f->syncobj, &fd);
+   ret = agx_sync_export_fd(dev, f->syncobj, &fd);
    assert(!ret);
 
    sync_accumulate("asahi", &ctx->in_sync_fd, fd);

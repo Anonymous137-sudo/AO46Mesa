@@ -15,29 +15,50 @@
 static const char *
 alu_type_to_string(nir_alu_type type)
 {
-   switch (type) {
-   case nir_type_uint8:
-      return "uchar";
-   case nir_type_uint16:
-      return "ushort";
-   case nir_type_uint32:
-      return "uint";
-   case nir_type_uint64:
-      return "ulong";
-   case nir_type_int8:
-      return "char";
-   case nir_type_int16:
-      return "short";
-   case nir_type_int32:
-      return "int";
-   case nir_type_int64:
-      return "long";
-   case nir_type_float16:
-      return "half";
-   case nir_type_float32:
-      return "float";
+   switch (nir_alu_type_get_base_type(type)) {
+   case nir_type_bool:
+      return "bool";
+   case nir_type_uint:
+      switch (nir_alu_type_get_type_size(type)) {
+      case 8:
+         return "uchar";
+      case 16:
+         return "ushort";
+      case 32:
+         return "uint";
+      case 64:
+         return "ulong";
+      default:
+         return "uint";
+      }
+   case nir_type_int:
+      switch (nir_alu_type_get_type_size(type)) {
+      case 8:
+         return "char";
+      case 16:
+         return "short";
+      case 32:
+         return "int";
+      case 64:
+         return "long";
+      default:
+         return "int";
+      }
+   case nir_type_float:
+      switch (nir_alu_type_get_type_size(type)) {
+      case 16:
+         return "half";
+      case 32:
+         return "float";
+      case 64:
+         return "double";
+      default:
+         return "float";
+      }
    default:
-      UNREACHABLE("Unsupported nir_alu_type");
+      fprintf(stderr, "Unsupported nir_alu_type %u in Metal I/O map, falling back to float\n",
+              (unsigned)type);
+      return "float";
    }
 };
 
@@ -50,8 +71,92 @@ static const char *vector_suffixes[] = {
 };
 
 /* The type names of the generated output structs */
+static const char *VERTEX_INPUT_TYPE = "VertexIn";
 static const char *VERTEX_OUTPUT_TYPE = "VertexOut";
 static const char *FRAGMENT_OUTPUT_TYPE = "FragmentOut";
+
+static bool
+vertex_attrib_slot_is_generic(unsigned location)
+{
+   return location >= VERT_ATTRIB_GENERIC0 && location < VERT_ATTRIB_MAX;
+}
+
+static unsigned
+vertex_attrib_slot_attribute_index(unsigned location)
+{
+   if (vertex_attrib_slot_is_generic(location))
+      return location - VERT_ATTRIB_GENERIC0;
+
+   switch (location) {
+   case VERT_ATTRIB_POS:
+      return 0;
+   default:
+      return location;
+   }
+}
+
+static void
+vertex_attrib_slot_name(struct nir_to_msl_ctx *ctx, unsigned location)
+{
+   if (vertex_attrib_slot_is_generic(location)) {
+      P(ctx, "attrib_%02u", location - VERT_ATTRIB_GENERIC0);
+      return;
+   }
+
+   switch (location) {
+   case VERT_ATTRIB_POS:
+      P(ctx, "position_in");
+      break;
+   case VERT_ATTRIB_NORMAL:
+      P(ctx, "normal_in");
+      break;
+   case VERT_ATTRIB_COLOR0:
+      P(ctx, "color0_in");
+      break;
+   case VERT_ATTRIB_COLOR1:
+      P(ctx, "color1_in");
+      break;
+   case VERT_ATTRIB_FOG:
+      P(ctx, "fogcoord_in");
+      break;
+   case VERT_ATTRIB_COLOR_INDEX:
+      P(ctx, "color_index_in");
+      break;
+   case VERT_ATTRIB_TEX0:
+      P(ctx, "texcoord0_in");
+      break;
+   case VERT_ATTRIB_TEX1:
+      P(ctx, "texcoord1_in");
+      break;
+   case VERT_ATTRIB_TEX2:
+      P(ctx, "texcoord2_in");
+      break;
+   case VERT_ATTRIB_TEX3:
+      P(ctx, "texcoord3_in");
+      break;
+   case VERT_ATTRIB_TEX4:
+      P(ctx, "texcoord4_in");
+      break;
+   case VERT_ATTRIB_TEX5:
+      P(ctx, "texcoord5_in");
+      break;
+   case VERT_ATTRIB_TEX6:
+      P(ctx, "texcoord6_in");
+      break;
+   case VERT_ATTRIB_TEX7:
+      P(ctx, "texcoord7_in");
+      break;
+   case VERT_ATTRIB_POINT_SIZE:
+      P(ctx, "point_size_in");
+      break;
+   case VERT_ATTRIB_EDGEFLAG:
+      P(ctx, "edgeflag_in");
+      break;
+   default:
+      P(ctx, "attrib_%u", location);
+      break;
+   }
+}
 
 /* Mapping from NIR's varying slots to the generated struct member name */
 static const struct {
@@ -60,10 +165,22 @@ static const struct {
    bool scalarized;
 } VARYING_SLOT_INFO[NUM_TOTAL_VARYING_SLOTS] = {
    [VARYING_SLOT_POS] = {"position"},
+   [VARYING_SLOT_COL0] = {"color_0", .user = true},
+   [VARYING_SLOT_COL1] = {"color_1", .user = true},
+   [VARYING_SLOT_FOGC] = {"fog_coord", .user = true},
+   [VARYING_SLOT_TEX0] = {"tex_0", .user = true},
+   [VARYING_SLOT_TEX1] = {"tex_1", .user = true},
+   [VARYING_SLOT_TEX2] = {"tex_2", .user = true},
+   [VARYING_SLOT_TEX3] = {"tex_3", .user = true},
+   [VARYING_SLOT_TEX4] = {"tex_4", .user = true},
+   [VARYING_SLOT_TEX5] = {"tex_5", .user = true},
+   [VARYING_SLOT_TEX6] = {"tex_6", .user = true},
+   [VARYING_SLOT_TEX7] = {"tex_7", .user = true},
    [VARYING_SLOT_PSIZ] = {"point_size"},
    [VARYING_SLOT_PRIMITIVE_ID] = {"primitive_id"},
    [VARYING_SLOT_LAYER] = {"render_target_array_index"},
    [VARYING_SLOT_VIEWPORT] = {"viewport_array_index"},
+   [VARYING_SLOT_FACE] = {"front_facing"},
    [VARYING_SLOT_CLIP_DIST0] = {"clip_0", .user = true, .scalarized = true},
    [VARYING_SLOT_CLIP_DIST1] = {"clip_1", .user = true, .scalarized = true},
    [VARYING_SLOT_CULL_DIST0] = {"cull_0", .user = true, .scalarized = true},
@@ -139,6 +256,7 @@ static const char *FS_OUTPUT_NAME[] = {
    [FRAG_RESULT_DEPTH] = "depth_out",
    [FRAG_RESULT_STENCIL] = "stencil_out",
    [FRAG_RESULT_SAMPLE_MASK] = "sample_mask_out",
+   [FRAG_RESULT_COLOR] = "color_0",
    [FRAG_RESULT_DATA0] = "color_0",
    [FRAG_RESULT_DATA1] = "color_1",
    [FRAG_RESULT_DATA2] = "color_2",
@@ -153,6 +271,7 @@ static const char *FS_OUTPUT_NAME[] = {
 static const char *FS_OUTPUT_SEMANTIC[] = {
    [FRAG_RESULT_DEPTH] = "", // special case, depends on depth layout
    [FRAG_RESULT_STENCIL] = "stencil", [FRAG_RESULT_SAMPLE_MASK] = "sample_mask",
+   [FRAG_RESULT_COLOR] = "color(0)",
    [FRAG_RESULT_DATA0] = "color(0)",  [FRAG_RESULT_DATA1] = "color(1)",
    [FRAG_RESULT_DATA2] = "color(2)",  [FRAG_RESULT_DATA3] = "color(3)",
    [FRAG_RESULT_DATA4] = "color(4)",  [FRAG_RESULT_DATA5] = "color(5)",
@@ -165,6 +284,26 @@ const char *depth_layout_arg[8] = {
    [FRAG_DEPTH_LAYOUT_LESS] = "less",
    [FRAG_DEPTH_LAYOUT_UNCHANGED] = "any",
 };
+
+/* Generate the struct definition for the vertex shader return value */
+static void
+vs_input_block(nir_shader *shader, struct nir_to_msl_ctx *ctx)
+{
+   P(ctx, "struct %s {\n", VERTEX_INPUT_TYPE);
+   ctx->indentlevel++;
+   u_foreach_bit64(location, shader->info.inputs_read) {
+      struct io_slot_info info = ctx->inputs_info[location];
+      const char *type = alu_type_to_string(info.type);
+      const char *vector_suffix = vector_suffixes[info.num_components];
+
+      P_IND(ctx, "%s%s ", type, vector_suffix);
+      vertex_attrib_slot_name(ctx, location);
+      P(ctx, " [[attribute(%u)]];\n",
+        vertex_attrib_slot_attribute_index(location));
+   }
+   ctx->indentlevel--;
+   P(ctx, "};\n");
+}
 
 /* Generate the struct definition for the vertex shader return value */
 static void
@@ -432,6 +571,7 @@ msl_emit_io_blocks(struct nir_to_msl_ctx *ctx, nir_shader *shader)
 {
    switch (ctx->shader->info.stage) {
    case MESA_SHADER_VERTEX:
+      vs_input_block(shader, ctx);
       vs_output_block(shader, ctx);
       break;
    case MESA_SHADER_FRAGMENT:
@@ -502,8 +642,12 @@ void
 msl_input_name(struct nir_to_msl_ctx *ctx, unsigned location,
                unsigned component)
 {
+   (void)component;
    P(ctx, "in.");
    switch (ctx->shader->info.stage) {
+   case MESA_SHADER_VERTEX:
+      vertex_attrib_slot_name(ctx, location);
+      break;
    case MESA_SHADER_FRAGMENT:
       varying_slot_name(ctx, location, component);
       break;

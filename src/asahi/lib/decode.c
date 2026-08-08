@@ -996,6 +996,21 @@ agxdecode_track_alloc(struct agxdecode_ctx *ctx, struct agx_bo *alloc)
    util_dynarray_append(&ctx->mmap_array, *alloc);
 }
 
+bool
+agxdecode_track_alloc_or_replace(struct agxdecode_ctx *ctx, struct agx_bo *alloc)
+{
+   util_dynarray_foreach(&ctx->mmap_array, struct agx_bo, it) {
+      if (it->handle == alloc->handle) {
+         free(it->va);
+         *it = *alloc;
+         return true;
+      }
+   }
+
+   agxdecode_track_alloc(ctx, alloc);
+   return false;
+}
+
 void
 agxdecode_track_free(struct agxdecode_ctx *ctx, struct agx_bo *bo)
 {

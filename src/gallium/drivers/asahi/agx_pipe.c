@@ -7,7 +7,6 @@
  */
 #include <errno.h>
 #include <stdio.h>
-#include <xf86drm.h>
 #include "asahi/compiler/agx_compile.h"
 #include "asahi/layout/layout.h"
 #include "asahi/lib/decode.h"
@@ -52,6 +51,7 @@
 #include "agx_pack.h"
 #include "agx_public.h"
 #include "agx_state.h"
+#include "agx_sync.h"
 #include "agx_tilebuffer.h"
 #include "shader_enums.h"
 
@@ -1662,14 +1662,14 @@ agx_destroy_context(struct pipe_context *pctx)
     **/
    u_rwlock_wrlock(&screen->destroy_lock);
 
-   drmSyncobjDestroy(dev->fd, ctx->in_sync_obj);
-   drmSyncobjDestroy(dev->fd, ctx->dummy_syncobj);
+   agx_sync_destroy(dev, ctx->in_sync_obj);
+   agx_sync_destroy(dev, ctx->dummy_syncobj);
    if (ctx->in_sync_fd != -1)
       close(ctx->in_sync_fd);
 
    for (unsigned i = 0; i < AGX_MAX_BATCHES; ++i) {
       if (ctx->batches.slots[i].syncobj)
-         drmSyncobjDestroy(dev->fd, ctx->batches.slots[i].syncobj);
+         agx_sync_destroy(dev, ctx->batches.slots[i].syncobj);
    }
 
    dev->ops.bo_unbind_object(dev, ctx->timestamp_handle);
@@ -1842,12 +1842,12 @@ agx_create_context(struct pipe_screen *screen, void *priv, unsigned flags)
 
    /* Sync object/FD used for NATIVE_FENCE_FD. */
    ctx->in_sync_fd = -1;
-   ret = drmSyncobjCreate(agx_device(screen)->fd, 0, &ctx->in_sync_obj);
+   ret = agx_sync_create(agx_device(screen), 0, &ctx->in_sync_obj);
    assert(!ret);
 
    /* Dummy sync object used before any work has been submitted. */
-   ret = drmSyncobjCreate(agx_device(screen)->fd, DRM_SYNCOBJ_CREATE_SIGNALED,
-                          &ctx->dummy_syncobj);
+   ret = agx_sync_create(agx_device(screen), AGX_SYNC_CREATE_SIGNALED,
+                         &ctx->dummy_syncobj);
    assert(!ret);
    ctx->syncobj = ctx->dummy_syncobj;
 
@@ -2332,7 +2332,7 @@ agx_destroy_screen(struct pipe_screen *pscreen)
 {
    struct agx_screen *screen = agx_screen(pscreen);
 
-   drmSyncobjDestroy(screen->dev.fd, screen->flush_syncobj);
+   agx_sync_destroy(&screen->dev, screen->flush_syncobj);
 
    if (screen->dev.ro)
       screen->dev.ro->destroy(screen->dev.ro);
@@ -2451,8 +2451,8 @@ agx_screen_create(int fd, struct renderonly *ro,
    if (driQueryOptionb(config->options, "asahi_no_fp16"))
       agx_screen->dev.debug |= AGX_DBG_NO16;
 
-   int ret =
-      drmSyncobjCreate(agx_device(screen)->fd, 0, &agx_screen->flush_syncobj);
+   int ret = agx_sync_create(agx_device(screen), 0,
+                             &agx_screen->flush_syncobj);
    assert(!ret);
 
    simple_mtx_init(&agx_screen->flush_seqid_lock, mtx_plain);

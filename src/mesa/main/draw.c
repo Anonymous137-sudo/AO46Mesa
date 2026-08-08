@@ -226,6 +226,31 @@ valid_elements_type(struct gl_context *ctx, GLenum type)
    return _mesa_is_index_type_valid(type) ? GL_NO_ERROR : GL_INVALID_ENUM;
 }
 
+static GLenum
+validate_mapped_draw_buffers(struct gl_context *ctx, bool indexed)
+{
+   const struct gl_vertex_array_object *vao = ctx->Array._DrawVAO;
+   const GLbitfield enabled_arrays = _mesa_get_enabled_vertex_arrays(ctx);
+
+   for (unsigned attr = 0; attr < VERT_ATTRIB_MAX; attr++) {
+      if (!(enabled_arrays & VERT_BIT(attr)))
+         continue;
+
+      const struct gl_vertex_buffer_binding *binding =
+         _mesa_draw_buffer_binding(vao, attr);
+      struct gl_buffer_object *buffer = binding->BufferObj;
+
+      if (buffer && _mesa_check_disallowed_mapping(buffer))
+         return GL_INVALID_OPERATION;
+   }
+
+   if (indexed && vao->IndexBufferObj &&
+       _mesa_check_disallowed_mapping(vao->IndexBufferObj))
+      return GL_INVALID_OPERATION;
+
+   return GL_NO_ERROR;
+}
+
 static inline bool
 indices_aligned(unsigned index_size_shift, const GLvoid *indices)
 {
@@ -253,7 +278,11 @@ validate_DrawElements_common(struct gl_context *ctx, GLenum mode,
    if (error)
       return error;
 
-   return valid_elements_type(ctx, type);
+   error = valid_elements_type(ctx, type);
+   if (error)
+      return error;
+
+   return validate_mapped_draw_buffers(ctx, true);
 }
 
 /**
@@ -308,6 +337,10 @@ _mesa_validate_MultiDrawElements(struct gl_context *ctx,
 
       if (!error) {
          error = valid_elements_type(ctx, type);
+
+         if (!error) {
+            error = validate_mapped_draw_buffers(ctx, true);
+         }
 
          if (!error) {
             for (int i = 0; i < primcount; i++) {
@@ -471,6 +504,10 @@ validate_draw_arrays(struct gl_context *ctx,
    if (error)
       return error;
 
+   error = validate_mapped_draw_buffers(ctx, false);
+   if (error)
+      return error;
+
    if (need_xfb_remaining_prims_check(ctx)) {
       struct gl_transform_feedback_object *xfb_obj
          = ctx->TransformFeedback.CurrentObject;
@@ -536,6 +573,10 @@ _mesa_validate_MultiDrawArrays(struct gl_context *ctx, GLenum mode,
       error = GL_INVALID_VALUE;
    } else {
       error = _mesa_valid_prim_mode(ctx, mode);
+
+      if (!error) {
+         error = validate_mapped_draw_buffers(ctx, false);
+      }
 
       if (!error) {
          for (int i = 0; i < primcount; ++i) {
@@ -653,6 +694,10 @@ valid_draw_indirect(struct gl_context *ctx,
    if (error)
       return error;
 
+   error = validate_mapped_draw_buffers(ctx, false);
+   if (error)
+      return error;
+
    /* OpenGL ES 3.1 specification, section 10.5:
     *
     *      "An INVALID_OPERATION error is generated if
@@ -715,6 +760,10 @@ valid_draw_indirect_elements(struct gl_context *ctx,
     */
    if (!ctx->Array.VAO->IndexBufferObj)
       return GL_INVALID_OPERATION;
+
+   error = validate_mapped_draw_buffers(ctx, true);
+   if (error)
+      return error;
 
    return valid_draw_indirect(ctx, mode, indirect, size);
 }

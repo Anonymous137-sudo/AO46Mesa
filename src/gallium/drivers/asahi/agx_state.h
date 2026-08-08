@@ -6,7 +6,6 @@
 
 #pragma once
 
-#include <xf86drm.h>
 #include "asahi/compiler/agx_compile.h"
 #include "asahi/genxml/agx_pack.h"
 #include "asahi/layout/layout.h"

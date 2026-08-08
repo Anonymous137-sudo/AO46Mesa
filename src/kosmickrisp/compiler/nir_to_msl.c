@@ -6,8 +6,14 @@
 
 #include "nir_to_msl.h"
 #include "msl_private.h"
+#include "compiler/glsl_types.h"
 #include "nir.h"
 #include "nir_builder.h"
+
+static const char *texture_dim(enum glsl_sampler_dim dim);
+static const char *tex_type_name(nir_alu_type ty);
+static nir_src *nir_tex_get_src(struct nir_tex_instr *tex,
+                                nir_tex_src_type type);
 
 static const char *
 get_stage_string(mesa_shader_stage stage)
@@ -94,6 +100,9 @@ static void
 emit_inputs(struct nir_to_msl_ctx *ctx, nir_shader *shader)
 {
    switch (shader->info.stage) {
+   case MESA_SHADER_VERTEX:
+      P_IND(ctx, "VertexIn in [[stage_in]],\n");
+      break;
    case MESA_SHADER_FRAGMENT:
       P_IND(ctx, "FragmentIn in [[stage_in]],\n");
       break;
@@ -102,6 +111,37 @@ emit_inputs(struct nir_to_msl_ctx *ctx, nir_shader *shader)
    }
    P_IND(ctx, "constant Buffer &buf0 [[buffer(0)]],\n");
    P_IND(ctx, "constant SamplerTable &sampler_table [[buffer(1)]]");
+   bool emitted_static_textures[64] = { false };
+   nir_foreach_function_impl(impl, shader) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_tex)
+               continue;
+
+            nir_tex_instr *tex = nir_instr_as_tex(instr);
+            if (nir_tex_get_src(tex, nir_tex_src_texture_handle))
+               continue;
+            if (tex->texture_index >= ARRAY_SIZE(emitted_static_textures) ||
+                emitted_static_textures[tex->texture_index]) {
+               continue;
+            }
+
+            P(ctx, ",\n");
+            P_INDENT(ctx);
+            if (tex->is_shadow) {
+               P(ctx, "depth%s%s<float>", texture_dim(tex->sampler_dim),
+                 tex->is_array ? "_array" : "");
+            } else {
+               P(ctx, "texture%s%s<%s>", texture_dim(tex->sampler_dim),
+                 tex->is_array ? "_array" : "",
+                 tex_type_name(tex->dest_type));
+            }
+            P(ctx, " tex_%u [[texture(%u)]]", tex->texture_index,
+              tex->texture_index);
+            emitted_static_textures[tex->texture_index] = true;
+         }
+      }
+   }
    if (ctx->uses_per_draw_data) {
       P(ctx, ",\n");
       P_IND(ctx, "constant Buffer &per_draw [[buffer(2)]]\n");
@@ -162,6 +202,11 @@ writemask_to_msl(struct nir_to_msl_ctx *ctx, unsigned write_mask,
 static void
 src_to_msl(struct nir_to_msl_ctx *ctx, nir_src *src)
 {
+   if (!src) {
+      P(ctx, "0");
+      return;
+   }
+
    /* Pointer types cannot use as_type casting */
    const char *bitcast = msl_bitcast_for_src(ctx->types, src);
    if (nir_src_is_const(*src)) {
@@ -201,6 +246,37 @@ src_to_msl(struct nir_to_msl_ctx *ctx, nir_src *src)
    }
    if (bitcast)
       P(ctx, ")");
+}
+
+static void
+sampler_src_to_msl(struct nir_to_msl_ctx *ctx,
+                   nir_tex_instr *tex,
+                   nir_src *sampler)
+{
+   if (sampler) {
+      src_to_msl(ctx, sampler);
+      return;
+   }
+
+   if (nir_tex_instr_need_sampler(tex) && !tex->embedded_sampler) {
+      P(ctx, "sampler_table.handles[%u]", tex->sampler_index);
+      return;
+   }
+
+   P(ctx, "sampler_table.handles[0]");
+}
+
+static void
+texture_src_to_msl(struct nir_to_msl_ctx *ctx,
+                   nir_tex_instr *tex,
+                   nir_src *texhandle)
+{
+   if (texhandle) {
+      src_to_msl(ctx, texhandle);
+      return;
+   }
+
+   P(ctx, "tex_%u", tex->texture_index);
 }
 
 static void
@@ -1325,6 +1401,13 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
       P(ctx, "]);\n");
       break;
    }
+   case nir_intrinsic_load_ubo: {
+      const char *type = msl_type_for_def(ctx->types, &instr->def);
+      P(ctx, "*((constant %s*)(((constant char *)&buf0.contents[0]) + ", type);
+      src_to_msl(ctx, &instr->src[1]);
+      P(ctx, "));\n");
+      break;
+   }
    case nir_intrinsic_load_buffer_ptr_kk:
       P(ctx, "(ulong)&buf%d.contents[0];\n", nir_intrinsic_binding(instr));
       break;
@@ -1824,13 +1907,13 @@ tex_to_msl(struct nir_to_msl_ctx *ctx, nir_tex_instr *tex)
       nir_src *min_lod_clamp = nir_tex_get_src(tex, nir_tex_src_min_lod);
       nir_src *offset = nir_tex_get_src(tex, nir_tex_src_offset);
       nir_src *comparator = nir_tex_get_src(tex, nir_tex_src_comparator);
-      src_to_msl(ctx, texhandle);
+      texture_src_to_msl(ctx, tex, texhandle);
       if (comparator) {
          P(ctx, ".sample_compare(");
       } else {
          P(ctx, ".sample(");
       }
-      src_to_msl(ctx, sampler);
+      sampler_src_to_msl(ctx, tex, sampler);
       P(ctx, ", ");
       tex_coord_swizzle(ctx, tex);
       if (comparator) {
@@ -1867,7 +1950,7 @@ tex_to_msl(struct nir_to_msl_ctx *ctx, nir_tex_instr *tex)
       break;
    }
    case nir_texop_txf: {
-      src_to_msl(ctx, texhandle);
+      texture_src_to_msl(ctx, tex, texhandle);
       P(ctx, ".read(");
       tex_coord_swizzle(ctx, tex);
       nir_src *lod = nir_tex_get_src(tex, nir_tex_src_lod);
@@ -1879,7 +1962,7 @@ tex_to_msl(struct nir_to_msl_ctx *ctx, nir_tex_instr *tex)
       break;
    }
    case nir_texop_txf_ms:
-      src_to_msl(ctx, texhandle);
+      texture_src_to_msl(ctx, tex, texhandle);
       P(ctx, ".read(");
       tex_coord_swizzle(ctx, tex);
       P(ctx, ", ");
@@ -1894,16 +1977,16 @@ tex_to_msl(struct nir_to_msl_ctx *ctx, nir_tex_instr *tex)
       } else {
          P(ctx, "%s(", tex_type_name(tex->dest_type));
       }
-      src_to_msl(ctx, texhandle);
+      texture_src_to_msl(ctx, tex, texhandle);
       P(ctx, ".get_width(")
       if (lod && tex->sampler_dim != GLSL_SAMPLER_DIM_MS &&
           tex->sampler_dim != GLSL_SAMPLER_DIM_BUF)
          src_to_msl(ctx, lod);
       P(ctx, ")");
       if (tex->sampler_dim != GLSL_SAMPLER_DIM_1D &&
-          tex->sampler_dim != GLSL_SAMPLER_DIM_BUF) {
+         tex->sampler_dim != GLSL_SAMPLER_DIM_BUF) {
          P(ctx, ", ");
-         src_to_msl(ctx, texhandle);
+         texture_src_to_msl(ctx, tex, texhandle);
          P(ctx, ".get_height(");
          if (lod && tex->sampler_dim != GLSL_SAMPLER_DIM_MS &&
              tex->sampler_dim != GLSL_SAMPLER_DIM_BUF)
@@ -1912,7 +1995,7 @@ tex_to_msl(struct nir_to_msl_ctx *ctx, nir_tex_instr *tex)
       }
       if (tex->sampler_dim == GLSL_SAMPLER_DIM_3D) {
          P(ctx, ", ");
-         src_to_msl(ctx, texhandle);
+         texture_src_to_msl(ctx, tex, texhandle);
          P(ctx, ".get_depth(");
          if (lod)
             src_to_msl(ctx, lod);
@@ -1920,26 +2003,26 @@ tex_to_msl(struct nir_to_msl_ctx *ctx, nir_tex_instr *tex)
       }
       if (tex->is_array) {
          P(ctx, ", ");
-         src_to_msl(ctx, texhandle);
+         texture_src_to_msl(ctx, tex, texhandle);
          P(ctx, ".get_array_size()");
       }
       P(ctx, ");\n")
       break;
    }
    case nir_texop_query_levels:
-      src_to_msl(ctx, texhandle);
+      texture_src_to_msl(ctx, tex, texhandle);
       P(ctx, ".get_num_mip_levels();\n");
       break;
    case nir_texop_tg4: {
       nir_src *offset = nir_tex_get_src(tex, nir_tex_src_offset);
       nir_src *comparator = nir_tex_get_src(tex, nir_tex_src_comparator);
-      src_to_msl(ctx, texhandle);
+      texture_src_to_msl(ctx, tex, texhandle);
       if (comparator) {
          P(ctx, ".gather_compare(");
       } else {
          P(ctx, ".gather(");
       }
-      src_to_msl(ctx, sampler);
+      sampler_src_to_msl(ctx, tex, sampler);
       P(ctx, ", ");
       tex_coord_swizzle(ctx, tex);
       if (comparator) {
@@ -1967,7 +2050,7 @@ tex_to_msl(struct nir_to_msl_ctx *ctx, nir_tex_instr *tex)
    }
 
    case nir_texop_texture_samples:
-      src_to_msl(ctx, texhandle);
+      texture_src_to_msl(ctx, tex, texhandle);
       P(ctx, ".get_num_samples();\n");
       break;
    case nir_texop_lod: {
@@ -1978,9 +2061,9 @@ tex_to_msl(struct nir_to_msl_ctx *ctx, nir_tex_instr *tex)
       /* Delegate the mip layer clamping to Metal, then apply bias and clamp
        * again to ensure we are within expected LOD. */
       P(ctx, "float2(clamp(")
-      src_to_msl(ctx, texhandle);
+      texture_src_to_msl(ctx, tex, texhandle);
       P(ctx, ".calculate_clamped_lod(");
-      src_to_msl(ctx, sampler);
+      sampler_src_to_msl(ctx, tex, sampler);
       P(ctx, ", ");
       src_to_msl(ctx, coord);
       P(ctx, ") + ");
@@ -1990,9 +2073,9 @@ tex_to_msl(struct nir_to_msl_ctx *ctx, nir_tex_instr *tex)
       P(ctx, ", ");
       src_to_msl(ctx, max);
       P(ctx, "), ");
-      src_to_msl(ctx, texhandle);
+      texture_src_to_msl(ctx, tex, texhandle);
       P(ctx, ".calculate_unclamped_lod(");
-      src_to_msl(ctx, sampler);
+      sampler_src_to_msl(ctx, tex, sampler);
       P(ctx, ", ");
       src_to_msl(ctx, coord);
       P(ctx, ")");
@@ -2230,6 +2313,10 @@ msl_preprocess_nir(struct nir_shader *nir)
    NIR_PASS(_, nir, nir_lower_frexp);
 
    NIR_PASS(_, nir, nir_lower_vars_to_ssa);
+   NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
+            glsl_count_attribute_slots,
+            nir_lower_io_lower_64bit_to_32 |
+               nir_lower_io_use_interpolated_input_intrinsics);
    NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_function_temp, NULL);
 
    /* SPIR-V passes a combined image/sampler to a function by value: it packs
@@ -2408,6 +2495,12 @@ msl_gather_info(struct nir_to_msl_ctx *ctx, struct nir_to_msl_options *options)
             uint32_t location = i + FRAG_RESULT_DATA0;
             ctx->outputs_info[location].num_components =
                options->rts_component_count[i];
+         }
+
+         if (ctx->shader->info.outputs_written &
+             BITFIELD64_BIT(FRAG_RESULT_COLOR)) {
+            ctx->outputs_info[FRAG_RESULT_COLOR].num_components =
+               options->rts_component_count[0];
          }
       }
    }

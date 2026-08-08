@@ -305,6 +305,11 @@ infer_types_from_intrinsic(struct hash_table *types, nir_intrinsic_instr *instr)
       set_type(types, &instr->def, TYPE_GENERIC_DATA);
       set_type(types, &instr->src[0], TYPE_UINT);
       break;
+   case nir_intrinsic_load_ubo:
+      set_type(types, &instr->def, TYPE_GENERIC_DATA);
+      set_type(types, &instr->src[0], TYPE_UINT);
+      set_type(types, &instr->src[1], TYPE_UINT);
+      break;
 
    case nir_intrinsic_global_atomic:
    case nir_intrinsic_global_atomic_swap:
@@ -732,10 +737,11 @@ msl_type_for_src(struct hash_table *types, nir_src *src)
 const char *
 msl_bitcast_for_src(struct hash_table *types, nir_src *src)
 {
+   if (!src || nir_src_is_if(src) || !src->ssa)
+      return NULL;
+
    ti_type src_type = get_type(types, src);
    ti_type def_type = get_type(types, src->ssa);
-   if (nir_src_is_if(src))
-      return NULL;
    if (src_type != def_type) {
       /* bool types cannot use as_type casting */
       if (src_type == TYPE_BOOL || def_type == TYPE_BOOL)

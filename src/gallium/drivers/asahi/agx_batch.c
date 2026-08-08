@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-#include <xf86drm.h>
+#include <unistd.h>
 #include "asahi/lib/agx_device_virtio.h"
 #include "asahi/lib/decode.h"
 #include "util/bitset.h"
@@ -12,6 +12,7 @@
 #include "util/u_range.h"
 #include "agx_device.h"
 #include "agx_state.h"
+#include "agx_sync.h"
 #include "vdrm.h"
 
 #define foreach_active(ctx, idx)                                               \
@@ -156,7 +157,7 @@ agx_batch_init(struct agx_context *ctx,
    batch->reduced_prim = MESA_PRIM_COUNT;
 
    if (!batch->syncobj) {
-      int ret = drmSyncobjCreate(dev->fd, 0, &batch->syncobj);
+      int ret = agx_sync_create(dev, 0, &batch->syncobj);
       assert(!ret && batch->syncobj);
    }
 
@@ -293,7 +294,7 @@ agx_cleanup_batches(struct agx_context *ctx)
    if (!count)
       return -1;
 
-   int ret = drmSyncobjWait(dev->fd, syncobjs, count, 0, 0, &first);
+   int ret = agx_sync_wait(dev, syncobjs, count, 0, 0, &first);
    assert(!ret || ret == -ETIME);
    if (ret)
       return -1;
@@ -597,7 +598,7 @@ agx_get_in_sync(struct agx_context *ctx)
 
    if (ctx->in_sync_fd >= 0) {
       int ret =
-         drmSyncobjImportSyncFile(dev->fd, ctx->in_sync_obj, ctx->in_sync_fd);
+         agx_sync_import_fd(dev, ctx->in_sync_obj, ctx->in_sync_fd);
       assert(!ret);
 
       close(ctx->in_sync_fd);
@@ -711,11 +712,11 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
 
          /* Create a new syncobj */
          uint32_t sync_handle;
-         int ret = drmSyncobjCreate(dev->fd, 0, &sync_handle);
+         int ret = agx_sync_create(dev, 0, &sync_handle);
          assert(ret >= 0);
 
          /* Import the sync file into it */
-         ret = drmSyncobjImportSyncFile(dev->fd, sync_handle, in_sync_fd);
+         ret = agx_sync_import_fd(dev, sync_handle, in_sync_fd);
          assert(ret >= 0);
          assert(sync_handle);
          close(in_sync_fd);
@@ -901,7 +902,7 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
    if (shared_bo_count) {
       /* Convert our handle to a sync file */
       int out_sync_fd = -1;
-      int ret = drmSyncobjExportSyncFile(dev->fd, batch->syncobj, &out_sync_fd);
+      int ret = agx_sync_export_fd(dev, batch->syncobj, &out_sync_fd);
       assert(ret >= 0);
       assert(out_sync_fd >= 0);
 
@@ -913,7 +914,7 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
                      shared_bos[i]->va->addr);
 
          /* Free the in_sync handle we just acquired */
-         ret = drmSyncobjDestroy(dev->fd, syncs[i].handle);
+         ret = agx_sync_destroy(dev, syncs[i].handle);
          assert(ret >= 0);
          /* And then import the out_sync sync file into it */
          ret = agx_import_sync_file(dev, shared_bos[i], out_sync_fd);
@@ -953,7 +954,7 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
       }
 
       /* Wait so we can get errors reported back */
-      int ret = drmSyncobjWait(dev->fd, &batch->syncobj, 1, INT64_MAX, 0, NULL);
+      int ret = agx_sync_wait(dev, &batch->syncobj, 1, INT64_MAX, 0, NULL);
       assert(!ret);
 
       agx_batch_print_stats(dev, batch);
@@ -1006,7 +1007,7 @@ agx_sync_batch(struct agx_context *ctx, struct agx_batch *batch)
       return;
 
    assert(batch->syncobj);
-   int ret = drmSyncobjWait(dev->fd, &batch->syncobj, 1, INT64_MAX, 0, NULL);
+   int ret = agx_sync_wait(dev, &batch->syncobj, 1, INT64_MAX, 0, NULL);
    assert(!ret);
    agx_batch_cleanup(ctx, batch, false);
 }

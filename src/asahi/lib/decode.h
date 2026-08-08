@@ -35,6 +35,9 @@ void agxdecode_dump_file_open(void);
 
 void agxdecode_track_alloc(struct agxdecode_ctx *ctx, struct agx_bo *alloc);
 
+bool agxdecode_track_alloc_or_replace(struct agxdecode_ctx *ctx,
+                                      struct agx_bo *alloc);
+
 void agxdecode_track_free(struct agxdecode_ctx *ctx, struct agx_bo *bo);
 
 struct libagxdecode_config {

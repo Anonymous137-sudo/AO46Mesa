@@ -4,6 +4,7 @@
 
 # This is used only for the r/e tooling on macOS
 dep_iokit = dependency('IOKit', required : false)
+dep_corefoundation = dependency('CoreFoundation', required : false)
 
 inc_asahi = include_directories([
    '.', 'layout', 'lib', 'genxml', 'compiler'

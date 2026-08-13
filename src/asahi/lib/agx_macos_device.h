@@ -22,6 +22,15 @@ enum agx_macos_device_profile {
    AGX_MACOS_DEVICE_PROFILE_T6040_G16S_USC3,
 };
 
+/* Session state is separate from the IOKit connection so a device-loss event
+ * can reject new work while resource and queue teardown retain their handles. */
+enum agx_macos_device_session_state {
+   AGX_MACOS_DEVICE_SESSION_STATE_CLOSED = 0,
+   AGX_MACOS_DEVICE_SESSION_STATE_OPEN,
+   AGX_MACOS_DEVICE_SESSION_STATE_CONFIGURED,
+   AGX_MACOS_DEVICE_SESSION_STATE_LOST,
+};
+
 struct agx_macos_device_capabilities {
    uint8_t data[AGX_MACOS_DEVICE_CAPABILITIES_SIZE];
 };
@@ -55,6 +64,7 @@ struct agx_macos_device_session {
    struct agx_macos_device_info info;
    struct agx_macos_device_capabilities capabilities;
    enum agx_macos_device_profile profile;
+   enum agx_macos_device_session_state state;
    bool api_configured;
    uint64_t api_generation;
 };
@@ -78,5 +88,12 @@ void agx_macos_device_close(struct agx_macos_device *device);
 enum agx_macos_device_session_status agx_macos_device_session_open(
    struct agx_macos_device_session *session);
 void agx_macos_device_session_close(struct agx_macos_device_session *session);
+bool agx_macos_device_session_is_open(
+   const struct agx_macos_device_session *session);
+bool agx_macos_device_session_is_current(
+   const struct agx_macos_device_session *session);
+bool agx_macos_device_session_is_lost(
+   const struct agx_macos_device_session *session);
+bool agx_macos_device_session_mark_lost(struct agx_macos_device_session *session);
 kern_return_t agx_macos_device_session_configure_traced_api(
    struct agx_macos_device_session *session, const char *client_path);

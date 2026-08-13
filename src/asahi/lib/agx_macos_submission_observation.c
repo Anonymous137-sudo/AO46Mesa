@@ -8,6 +8,48 @@
 #include <stdint.h>
 #include <string.h>
 
+static uint64_t
+agx_macos_submission_fingerprint_bytes(uint64_t fingerprint,
+                                       const void *bytes, size_t byte_count)
+{
+   const uint8_t *data = bytes;
+
+   for (size_t i = 0; i < byte_count; ++i) {
+      fingerprint ^= data[i];
+      fingerprint *= UINT64_C(0x100000001b3);
+   }
+
+   return fingerprint;
+}
+
+static uint64_t
+agx_macos_submission_carrier_extended_fingerprint(
+   const struct agx_macos_submission_carrier_extended_snapshot *snapshot)
+{
+   const uint64_t auxiliary_offset = snapshot->observation.auxiliary_offset;
+   const uint64_t auxiliary_readable_prefix =
+      snapshot->observation.auxiliary_readable_prefix;
+   uint64_t fingerprint = UINT64_C(0xcbf29ce484222325);
+
+   fingerprint = agx_macos_submission_fingerprint_bytes(
+      fingerprint, &snapshot->observation.submission.queue_id,
+      sizeof(snapshot->observation.submission.queue_id));
+   fingerprint = agx_macos_submission_fingerprint_bytes(
+      fingerprint, &snapshot->observation.submission.descriptor,
+      sizeof(snapshot->observation.submission.descriptor));
+   fingerprint = agx_macos_submission_fingerprint_bytes(
+      fingerprint, &auxiliary_offset, sizeof(auxiliary_offset));
+   fingerprint = agx_macos_submission_fingerprint_bytes(
+      fingerprint, &auxiliary_readable_prefix,
+      sizeof(auxiliary_readable_prefix));
+   fingerprint = agx_macos_submission_fingerprint_bytes(
+      fingerprint, &snapshot->opaque_pointer_slot,
+      sizeof(snapshot->opaque_pointer_slot));
+   return agx_macos_submission_fingerprint_bytes(
+      fingerprint, snapshot->auxiliary_prefix,
+      sizeof(snapshot->auxiliary_prefix));
+}
+
 bool
 agx_macos_submission_observation_decode(
    uint32_t queue_id, const void *bytes, size_t byte_count,
@@ -91,7 +133,23 @@ agx_macos_submission_carrier_extended_snapshot_capture(
    };
    memcpy(out_snapshot->auxiliary_prefix, auxiliary_bytes,
           sizeof(out_snapshot->auxiliary_prefix));
+   out_snapshot->integrity_fingerprint =
+      agx_macos_submission_carrier_extended_fingerprint(out_snapshot);
    return true;
+}
+
+bool
+agx_macos_submission_carrier_extended_snapshot_is_intact(
+   const struct agx_macos_submission_carrier_extended_snapshot *snapshot)
+{
+   return snapshot && snapshot->observation.submission.queue_id != 0 &&
+          snapshot->observation.auxiliary_offset ==
+             AGX_MACOS_SUBMISSION_CARRIER_AUXILIARY_OFFSET &&
+          snapshot->observation.auxiliary_readable_prefix ==
+             AGX_MACOS_SUBMISSION_CARRIER_EXTENDED_READABLE_PREFIX &&
+          snapshot->opaque_pointer_slot != 0 &&
+          snapshot->integrity_fingerprint ==
+             agx_macos_submission_carrier_extended_fingerprint(snapshot);
 }
 
 bool
@@ -124,6 +182,34 @@ agx_macos_submission_carrier_observation_decode(
       .submission = submission,
       .auxiliary_offset = AGX_MACOS_SUBMISSION_CARRIER_AUXILIARY_OFFSET,
       .auxiliary_readable_prefix = auxiliary_readable_prefix,
+   };
+   return true;
+}
+
+bool
+agx_macos_submission_trap_observation_decode(
+   uint32_t trap_index, uintptr_t queue_value, uintptr_t descriptor_size,
+   uintptr_t descriptor_address, uintptr_t auxiliary_address,
+   size_t auxiliary_readable_prefix,
+   struct agx_macos_submission_trap_observation *out_observation)
+{
+   struct agx_macos_submission_carrier_observation carrier;
+
+   if (!out_observation || trap_index != 0 || queue_value == 0 ||
+       queue_value > UINT32_MAX ||
+       descriptor_size != sizeof(struct agx_macos_submit_descriptor_observed) ||
+       descriptor_address == 0 || auxiliary_address == 0 ||
+       !agx_macos_submission_carrier_observation_decode(
+          (uint32_t)queue_value, (const void *)descriptor_address,
+          (size_t)descriptor_size, (const void *)auxiliary_address,
+          auxiliary_readable_prefix, &carrier)) {
+      return false;
+   }
+
+   *out_observation = (struct agx_macos_submission_trap_observation){
+      .carrier = carrier,
+      .trap_index = trap_index,
+      .descriptor_size = (size_t)descriptor_size,
    };
    return true;
 }

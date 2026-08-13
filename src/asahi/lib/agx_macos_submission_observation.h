@@ -52,6 +52,15 @@ struct agx_macos_submission_carrier_observation {
    size_t auxiliary_readable_prefix;
 };
 
+/* The complete outer Trap4 transport shape observed on the profiled macOS
+ * AGX interface. This records the call boundary only; the carrier sidecar is
+ * still opaque and this type must never be used to construct a submission. */
+struct agx_macos_submission_trap_observation {
+   struct agx_macos_submission_carrier_observation carrier;
+   uint32_t trap_index;
+   size_t descriptor_size;
+};
+
 /* Captures only the fixed-size sidecar prefix observed by tracing. This
  * immutable snapshot is for offline UABI study, never direct submission. */
 struct agx_macos_submission_carrier_snapshot {
@@ -67,12 +76,18 @@ struct agx_macos_submission_carrier_extended_snapshot {
    uint64_t opaque_pointer_slot;
    uint8_t auxiliary_prefix
       [AGX_MACOS_SUBMISSION_CARRIER_EXTENDED_READABLE_PREFIX];
+   /* A deterministic corruption check for this owned copy. It is not a
+    * cryptographic authenticity mechanism and does not decode the sidecar. */
+   uint64_t integrity_fingerprint;
 };
 
 /* A future direct-submit path owns one of these until both observed completion
  * tokens arrive. This is completion bookkeeping only, not a submit ABI. */
 struct agx_macos_submission_fence {
    struct agx_macos_submission_observation observation;
+   /* Zero is a trace-only fence. A direct submission must bind this to the
+    * active notification queue generation before it can be polled. */
+   uint64_t queue_api_generation;
    uint8_t completed_token_mask;
 };
 
@@ -91,6 +106,15 @@ bool agx_macos_submission_carrier_observation_decode(
    const void *auxiliary_bytes, size_t auxiliary_readable_prefix,
    struct agx_macos_submission_carrier_observation *out_observation);
 
+/* Validates the observed IOConnectTrap4 transport contract: index zero, an
+ * unsigned 32-bit queue value, a 64-byte descriptor, and the bounded carrier
+ * relationship. This is trace validation, not a direct-submit entry point. */
+bool agx_macos_submission_trap_observation_decode(
+   uint32_t trap_index, uintptr_t queue_value, uintptr_t descriptor_size,
+   uintptr_t descriptor_address, uintptr_t auxiliary_address,
+   size_t auxiliary_readable_prefix,
+   struct agx_macos_submission_trap_observation *out_observation);
+
 bool agx_macos_submission_carrier_snapshot_capture(
    uint32_t queue_id, const void *descriptor_bytes, size_t descriptor_size,
    const void *auxiliary_bytes, size_t auxiliary_readable_prefix,
@@ -103,6 +127,9 @@ bool agx_macos_submission_carrier_extended_snapshot_capture(
    uint32_t queue_id, const void *descriptor_bytes, size_t descriptor_size,
    const void *auxiliary_bytes, size_t auxiliary_readable_prefix,
    struct agx_macos_submission_carrier_extended_snapshot *out_snapshot);
+/* Verifies that the owned carrier evidence has not changed after capture. */
+bool agx_macos_submission_carrier_extended_snapshot_is_intact(
+   const struct agx_macos_submission_carrier_extended_snapshot *snapshot);
 
 /* Returns true only when a 40-byte completion record starts with one of the
  * two descriptor tokens on the same observed queue. out_token_index receives

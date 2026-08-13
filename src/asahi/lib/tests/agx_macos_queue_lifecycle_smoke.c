@@ -67,6 +67,17 @@ main(int argc, char **argv)
          agx_macos_device_session_close(&session);
          return 1;
       }
+
+      if (!agx_macos_notification_queue_is_current(&session, &queues[i]) ||
+          (i > 0 &&
+           agx_macos_notification_queue_is_current(&session, &queues[0]))) {
+         fputs("AGX_MACOS_QUEUE_LIFECYCLE_SMOKE queue generation ownership failed\n",
+               stderr);
+         for (unsigned j = 0; j <= i; ++j)
+            release_for_session_close(&queues[j]);
+         agx_macos_device_session_close(&session);
+         return 1;
+      }
    }
 
    for (unsigned i = 2; i-- > 0;) {

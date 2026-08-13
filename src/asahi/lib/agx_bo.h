@@ -104,6 +104,10 @@ struct agx_bo {
 
    /* For debugging */
    const char *label;
+
+   /* Private storage for a non-DRM backing allocation. The macOS adapter uses
+    * this for its tracked direct AGX BO; Linux leaves it NULL. */
+   void *platform_data;
 };
 
 static inline uint32_t

@@ -15,6 +15,7 @@ struct pipe_fence_handle {
    struct pipe_reference reference;
    uint32_t syncobj;
    bool signaled;
+   bool macos_native;
 };
 
 void agx_fence_reference(struct pipe_screen *pscreen,

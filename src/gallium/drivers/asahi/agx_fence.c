@@ -16,6 +16,7 @@
 #include "agx_state.h"
 #include "agx_sync.h"
 
+#include "asahi/lib/agx_macos_mesa_device.h"
 #include "util/libsync.h"
 #include "util/os_time.h"
 #include "util/u_inlines.h"
@@ -29,7 +30,11 @@ agx_fence_reference(struct pipe_screen *pscreen, struct pipe_fence_handle **ptr,
 
    if (pipe_reference(old ? &old->reference : NULL,
                       fence ? &fence->reference : NULL)) {
-      agx_sync_destroy(dev, old->syncobj);
+      int ret = agx_sync_destroy(dev, old->syncobj);
+
+      /* A completion-backed macOS sync cannot be discarded while it still
+       * owns Mesa BO references. Existing callers must finish it first. */
+      assert(ret == 0);
       free(old);
    }
 
@@ -53,6 +58,11 @@ agx_fence_finish(struct pipe_screen *pscreen, struct pipe_context *ctx,
    ret = agx_sync_wait(dev, &fence->syncobj, 1, abs_timeout,
                        AGX_SYNC_WAIT_ALL, NULL);
 
+   /* A live macOS completion queue can disappear with its AGX session. That
+    * is a failed wait, not an invariant violation in Gallium's fence API. */
+   if (fence->macos_native && ret < 0 && ret != -ETIME)
+      return false;
+
    assert(ret >= 0 || ret == -ETIME);
    fence->signaled = (ret >= 0);
    return fence->signaled;
@@ -63,6 +73,9 @@ agx_fence_get_fd(struct pipe_screen *screen, struct pipe_fence_handle *f)
 {
    struct agx_device *dev = agx_device(screen);
    int fd = -1;
+
+   if (f->macos_native)
+      return -1;
 
    int ret = agx_sync_export_fd(dev, f->syncobj, &fd);
    assert(ret >= 0);
@@ -76,6 +89,9 @@ agx_fence_from_fd(struct agx_context *ctx, int fd, enum pipe_fd_type type)
 {
    struct agx_device *dev = agx_device(ctx->base.screen);
    int ret;
+
+   if (agx_macos_mesa_sync_is_supported(dev))
+      return NULL;
 
    struct pipe_fence_handle *f = calloc(1, sizeof(*f));
    if (!f)
@@ -119,6 +135,23 @@ agx_fence_create(struct agx_context *ctx)
    struct agx_device *dev = agx_device(ctx->base.screen);
    int fd = -1, ret;
 
+   if (agx_macos_mesa_sync_is_supported(dev)) {
+      struct pipe_fence_handle *f = calloc(1, sizeof(*f));
+
+      if (!f ||
+          agx_macos_mesa_sync_reference(dev, ctx->syncobj) != 0) {
+         free(f);
+         return NULL;
+      }
+
+      *f = (struct pipe_fence_handle){
+         .syncobj = ctx->syncobj,
+         .macos_native = true,
+      };
+      pipe_reference_init(&f->reference, 1);
+      return f;
+   }
+
    /* Snapshot the last rendering out fence. We'd rather have another
     * syncobj instead of a sync file, but this is all we get.
     * (HandleToFD/FDToHandle just gives you another syncobj ID for the
@@ -155,6 +188,11 @@ agx_fence_server_sync(struct pipe_context *pctx, struct pipe_fence_handle *f,
    struct agx_context *ctx = agx_context(pctx);
    int fd = -1, ret;
    assert(!value);
+
+   if (agx_macos_mesa_sync_is_supported(dev)) {
+      agx_msg("macOS native cross-context fence import is unavailable\n");
+      return;
+   }
 
    ret = agx_sync_export_fd(dev, f->syncobj, &fd);
    assert(!ret);

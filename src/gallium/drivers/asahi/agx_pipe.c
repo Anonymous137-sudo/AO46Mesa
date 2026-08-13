@@ -2419,42 +2419,25 @@ agx_get_cl_cts_version(struct pipe_screen *pscreen)
    return NULL;
 }
 
-struct pipe_screen *
-agx_screen_create(int fd, struct renderonly *ro,
-                  const struct pipe_screen_config *config)
+/* The Linux factory only owns fd/DRM device acquisition. Keep the actual
+ * Gallium screen setup independent so the macOS AGX device path can reuse it
+ * once it provides an initialized agx_device. */
+static struct pipe_screen *
+agx_screen_finish_create(struct agx_screen *agx_screen,
+                         const struct pipe_screen_config *config)
 {
-   struct agx_screen *agx_screen;
-   struct pipe_screen *screen;
-
-   agx_screen = rzalloc(NULL, struct agx_screen);
-   if (!agx_screen)
-      return NULL;
-
-   screen = &agx_screen->pscreen;
-
-   /* parse driconf configuration now for device specific overrides */
-   driParseConfigFiles(config->options, config->options_info,
-                       &(driConfigFileParseParams) { .driverName = "asahi" });
-
-   agx_screen->dev.fd = fd;
-   agx_screen->dev.ro = ro;
-   u_rwlock_init(&agx_screen->destroy_lock);
-
-   /* Try to open an AGX device */
-   if (!agx_open_device(agx_screen, &agx_screen->dev)) {
-      ralloc_free(agx_screen);
-      return NULL;
-   }
-
-   /* Forward no16 flag from driconf. This must happen after opening the device,
-    * since agx_open_device sets debug.
-    */
-   if (driQueryOptionb(config->options, "asahi_no_fp16"))
-      agx_screen->dev.debug |= AGX_DBG_NO16;
+   struct pipe_screen *screen = &agx_screen->pscreen;
 
    int ret = agx_sync_create(agx_device(screen), 0,
                              &agx_screen->flush_syncobj);
-   assert(!ret);
+   if (ret) {
+      /* A direct macOS device must provide real completion-backed sync before
+       * Gallium can create contexts. Never turn an incomplete winsys into an
+       * assertion or a superficially valid pipe_screen. */
+      agx_close_device(&agx_screen->dev);
+      ralloc_free(agx_screen);
+      return NULL;
+   }
 
    simple_mtx_init(&agx_screen->flush_seqid_lock, mtx_plain);
 
@@ -2519,4 +2502,71 @@ agx_screen_create(int fd, struct renderonly *ro,
    }
 
    return screen;
+}
+
+struct pipe_screen *
+agx_screen_create(int fd, struct renderonly *ro,
+                  const struct pipe_screen_config *config)
+{
+   struct agx_screen *agx_screen = rzalloc(NULL, struct agx_screen);
+
+   if (!agx_screen)
+      return NULL;
+
+   /* Parse driconf before acquiring the Linux device. The macOS factory will
+    * reuse the same screen finalization after its own device acquisition. */
+   driParseConfigFiles(config->options, config->options_info,
+                       &(driConfigFileParseParams) { .driverName = "asahi" });
+
+   agx_screen->dev.fd = fd;
+   agx_screen->dev.ro = ro;
+   u_rwlock_init(&agx_screen->destroy_lock);
+
+   if (!agx_open_device(agx_screen, &agx_screen->dev)) {
+      ralloc_free(agx_screen);
+      return NULL;
+   }
+
+   /* Forward no16 after acquisition because agx_open_device sets debug. */
+   if (driQueryOptionb(config->options, "asahi_no_fp16"))
+      agx_screen->dev.debug |= AGX_DBG_NO16;
+
+   return agx_screen_finish_create(agx_screen, config);
+}
+
+struct pipe_screen *
+agx_screen_create_macos(struct agx_device *device,
+                        const struct pipe_screen_config *config)
+{
+   struct agx_screen *agx_screen;
+
+   /* The macOS winsys must fully initialize its direct AGX adapter before it
+    * reaches this point. It consumes finalized batches through submit_info;
+    * Linux drm_asahi_submit is not a macOS factory prerequisite. */
+   if (!device || !config || !device->ops.bo_alloc || !device->ops.bo_bind ||
+       !device->ops.bo_mmap || !device->ops.get_params ||
+       !device->ops.submit_info || !device->ops.bo_bind_object ||
+       !device->ops.bo_unbind_object || !device->ops.is_screen_ready ||
+       !device->ops.is_screen_ready(device) ||
+       device->params.gpu_generation == 0) {
+      return NULL;
+   }
+
+   agx_screen = rzalloc(NULL, struct agx_screen);
+   if (!agx_screen)
+      return NULL;
+
+   driParseConfigFiles(config->options, config->options_info,
+                       &(driConfigFileParseParams) { .driverName = "asahi" });
+
+   /* Transfer ownership exactly once. agx_screen_finish_create either adopts
+    * this device or closes it on a failed native synchronization admission. */
+   agx_screen->dev = *device;
+   *device = (struct agx_device){0};
+   u_rwlock_init(&agx_screen->destroy_lock);
+
+   if (driQueryOptionb(config->options, "asahi_no_fp16"))
+      agx_screen->dev.debug |= AGX_DBG_NO16;
+
+   return agx_screen_finish_create(agx_screen, config);
 }

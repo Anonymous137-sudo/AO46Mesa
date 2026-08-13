@@ -31,12 +31,22 @@ struct agx_macos_submission_lease {
     * copied descriptor, until the sidecar ABI is fully implemented. */
    struct agx_macos_submission_carrier_extended_snapshot carrier_snapshot;
    struct agx_macos_bo_set *bo_set;
+   /* Only bind_lease records this ownership. Binding the exposed fence alone
+    * is insufficient to admit a carrier-backed direct submission. */
+   io_connect_t queue_connection;
+   /* The queue stays owned by the screen bootstrap while this lease is live.
+    * It supplies host-side ordering only; no private queue state is retained. */
+   struct agx_macos_notification_queue *bound_queue;
+   uint32_t bound_queue_id;
+   uint64_t bound_queue_api_generation;
+   uint64_t queue_submission_serial;
    /* One pin per backing BO, even when multiple Mesa resource ranges alias
     * the same allocation in a batch. */
    uint32_t handles[AGX_MACOS_SUBMISSION_LEASE_MAX_RANGES];
    uint32_t handle_count;
    enum agx_macos_submission_lease_state state;
    bool has_carrier_snapshot;
+   bool queue_lease_bound;
    bool active;
 };
 
@@ -55,7 +65,8 @@ kern_return_t agx_macos_submission_lease_init_from_carrier(
    const struct agx_macos_submission_range *ranges, uint32_t range_count);
 
 /* Marks a lease as in flight after a direct submission has been accepted. A
- * bare descriptor lease is intentionally not eligible for this transition. */
+ * bare descriptor, an unbound or partially completed queue lease, or a stale
+ * BO-set generation is intentionally ineligible. */
 kern_return_t agx_macos_submission_lease_mark_submitted(
    struct agx_macos_submission_lease *lease);
 
@@ -64,13 +75,15 @@ kern_return_t agx_macos_submission_lease_mark_submitted(
 kern_return_t agx_macos_submission_lease_release(
    struct agx_macos_submission_lease *lease);
 
-/* Releases an in-flight lease only after the owning device/session is known
- * lost. This is a teardown path, not a timeout or normal cancellation path. */
+/* Releases an in-flight lease only after its BO set is no longer current for
+ * the owning device/session. This is a device-loss teardown path, not a
+ * timeout or normal cancellation path. */
 kern_return_t agx_macos_submission_lease_abandon_after_device_loss(
    struct agx_macos_submission_lease *lease);
 
-/* Returns a completion error without consuming ownership for a wrong token or
- * queue. On the final token, all BO pins are released before success. */
+/* Returns a completion error without consuming ownership for a wrong token,
+ * queue, or stale BO-set generation. On the final token, all BO pins are
+ * released before success. */
 kern_return_t agx_macos_submission_lease_record_completion(
    struct agx_macos_submission_lease *lease, uint32_t completion_queue_id,
    const struct agx_macos_completion_record_observed *record,

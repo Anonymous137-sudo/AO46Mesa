@@ -15,9 +15,11 @@ main(int argc, char **argv)
 {
    struct agx_macos_device_session session;
    struct agx_macos_screen_bootstrap bootstrap = {0};
+   struct agx_macos_device_session stale_session;
    struct agx_macos_bo bo = {.connection = IO_OBJECT_NULL};
    struct agx_macos_bo_mapping mapping = {0};
    struct agx_macos_submission_lease lease = {0};
+   struct agx_macos_iosurface_lease drawable_lease = {0};
    static const struct agx_macos_submit_descriptor_observed descriptor = {
       .header0 = AGX_MACOS_SUBMISSION_DESCRIPTOR_HEADER0,
       .header1 = AGX_MACOS_SUBMISSION_DESCRIPTOR_HEADER1,
@@ -30,6 +32,7 @@ main(int argc, char **argv)
    const uint8_t *pixels;
    uint8_t *write_pixels;
    uint32_t row_bytes;
+   struct agx_macos_iosurface_token drawable_token = {0};
    kern_return_t result;
 
    if (!getenv("AGX_MACOS_EXPERIMENTAL_SCREEN_BOOTSTRAP")) {
@@ -59,12 +62,27 @@ main(int argc, char **argv)
    if (!agx_macos_screen_bootstrap_is_ready(&bootstrap) ||
        bootstrap.offscreen.width != 64 || bootstrap.offscreen.height != 32 ||
        bootstrap.offscreen.generation != 1 ||
-       !bootstrap.command_infrastructure_initialized ||
-       bootstrap.command_infrastructure.api_generation != session.api_generation ||
-       bootstrap.command_infrastructure.pairs[0].value0 == 0 ||
-       bootstrap.command_infrastructure.pairs[2].value1 == 0) {
+       !agx_macos_bo_set_is_current(&bootstrap.bo_set, &session) ||
+       !agx_macos_notification_queue_is_current(&session,
+                                                 &bootstrap.notification_queue) ||
+       !agx_macos_command_infrastructure_is_current(
+          &session, &bootstrap.command_infrastructure)) {
       fputs("AGX_MACOS_SCREEN_BOOTSTRAP_SMOKE readiness validation failed\n",
             stderr);
+      goto fail;
+   }
+   if (!agx_macos_iosurface_capture_token(&bootstrap.offscreen,
+                                           &drawable_token) ||
+       !agx_macos_iosurface_token_can_present(&bootstrap.offscreen,
+                                               &drawable_token)) {
+      fputs("AGX_MACOS_SCREEN_BOOTSTRAP_SMOKE drawable token failed\n", stderr);
+      goto fail;
+   }
+   if (agx_macos_screen_bootstrap_acquire_offscreen_lease(
+          &bootstrap, &drawable_lease) != KERN_SUCCESS ||
+       !agx_macos_screen_bootstrap_offscreen_lease_is_current(
+          &bootstrap, &drawable_lease)) {
+      fputs("AGX_MACOS_SCREEN_BOOTSTRAP_SMOKE drawable lease failed\n", stderr);
       goto fail;
    }
    result = agx_macos_screen_bootstrap_create_bo(
@@ -88,9 +106,49 @@ main(int argc, char **argv)
               result);
       goto fail;
    }
+   result = agx_macos_iosurface_map_read(&bootstrap.offscreen, &pixels,
+                                          &row_bytes);
+   if (result != KERN_SUCCESS ||
+       agx_macos_screen_bootstrap_destroy(&bootstrap) != kIOReturnBusy ||
+       !agx_macos_screen_bootstrap_is_ready(&bootstrap) ||
+       agx_macos_screen_bootstrap_resize_offscreen(&bootstrap, 128, 64) !=
+          kIOReturnBadArgument ||
+       agx_macos_iosurface_unmap_read(&bootstrap.offscreen) != KERN_SUCCESS) {
+      fputs("AGX_MACOS_SCREEN_BOOTSTRAP_SMOKE locked resize rejection failed\n",
+            stderr);
+      goto fail;
+   }
+   result = agx_macos_screen_bootstrap_resize_offscreen(&bootstrap, 128, 64);
+   if (result != KERN_SUCCESS || bootstrap.offscreen.width != 128 ||
+       bootstrap.offscreen.height != 64 || bootstrap.offscreen.generation != 2 ||
+       agx_macos_screen_bootstrap_offscreen_lease_is_current(
+          &bootstrap, &drawable_lease) ||
+       agx_macos_iosurface_token_is_current(&bootstrap.offscreen,
+                                             &drawable_token)) {
+      fprintf(stderr, "AGX_MACOS_SCREEN_BOOTSTRAP_SMOKE resize failed: %#x\n",
+              result);
+      goto fail;
+   }
+   agx_macos_iosurface_release_lease(&drawable_lease);
+   if (agx_macos_screen_bootstrap_acquire_offscreen_lease(
+          &bootstrap, &drawable_lease) != KERN_SUCCESS ||
+       !agx_macos_screen_bootstrap_offscreen_lease_is_current(
+          &bootstrap, &drawable_lease)) {
+      fputs("AGX_MACOS_SCREEN_BOOTSTRAP_SMOKE drawable lease rebind failed\n",
+            stderr);
+      goto fail;
+   }
+   if (!agx_macos_iosurface_capture_token(&bootstrap.offscreen,
+                                           &drawable_token) ||
+       !agx_macos_iosurface_token_can_present(&bootstrap.offscreen,
+                                               &drawable_token)) {
+      fputs("AGX_MACOS_SCREEN_BOOTSTRAP_SMOKE resized drawable token failed\n",
+            stderr);
+      goto fail;
+   }
    result = agx_macos_iosurface_map_write(&bootstrap.offscreen, &write_pixels,
                                            &row_bytes);
-   if (result != KERN_SUCCESS || !write_pixels || row_bytes != 256) {
+   if (result != KERN_SUCCESS || !write_pixels || row_bytes != 512) {
       fprintf(stderr,
               "AGX_MACOS_SCREEN_BOOTSTRAP_SMOKE offscreen write failed: %#x\n",
               result);
@@ -177,6 +235,17 @@ main(int argc, char **argv)
               result);
       goto fail;
    }
+   stale_session = session;
+   stale_session.api_generation++;
+   if (agx_macos_notification_queue_bind_lease(
+          &stale_session, &bootstrap.notification_queue, &lease) !=
+          kIOReturnBadArgument ||
+       agx_macos_notification_queue_bind_lease(
+          &session, &bootstrap.notification_queue, &lease) != KERN_SUCCESS) {
+      fputs("AGX_MACOS_SCREEN_BOOTSTRAP_SMOKE queue generation admission failed\n",
+            stderr);
+      goto fail;
+   }
    result = agx_macos_submission_lease_mark_submitted(&lease);
    if (result != KERN_SUCCESS) {
       fprintf(stderr,
@@ -191,6 +260,16 @@ main(int argc, char **argv)
               result);
       goto fail;
    }
+   result = agx_macos_submission_lease_abandon_after_device_loss(&lease);
+   if (result != kIOReturnBusy) {
+      fprintf(stderr,
+              "AGX_MACOS_SCREEN_BOOTSTRAP_SMOKE abandoned a live lease: %#x\n",
+              result);
+      goto fail;
+   }
+
+   /* An invalidated session is the required precondition for loss retirement. */
+   ++session.api_generation;
    result = agx_macos_submission_lease_abandon_after_device_loss(&lease);
    if (result != KERN_SUCCESS) {
       fprintf(stderr,
@@ -211,11 +290,13 @@ main(int argc, char **argv)
       goto fail;
    }
 
+   agx_macos_iosurface_release_lease(&drawable_lease);
    agx_macos_device_session_close(&session);
    puts("AGX_MACOS_SCREEN_BOOTSTRAP_SMOKE complete");
    return 0;
 
 fail:
+   agx_macos_iosurface_release_lease(&drawable_lease);
    if (mapping.active && bootstrap.bo_set_initialized)
       (void)agx_macos_bo_set_unmap_range(&bootstrap.bo_set, &mapping);
    if (lease.active) {

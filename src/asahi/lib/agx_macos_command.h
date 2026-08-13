@@ -30,3 +30,9 @@ struct agx_macos_command_infrastructure {
 kern_return_t agx_macos_command_infrastructure_init(
    const struct agx_macos_device_session *session,
    struct agx_macos_command_infrastructure *infrastructure);
+
+/* Command-pair replies are session-scoped. Do not admit them after an API
+ * generation change, a session teardown, or any corruption of an opaque pair. */
+bool agx_macos_command_infrastructure_is_current(
+   const struct agx_macos_device_session *session,
+   const struct agx_macos_command_infrastructure *infrastructure);

@@ -15,6 +15,25 @@ agx_macos_command_pair_is_valid(const struct agx_macos_command_pair *pair)
    return pair->value0 != 0 && pair->value1 != 0;
 }
 
+bool
+agx_macos_command_infrastructure_is_current(
+   const struct agx_macos_device_session *session,
+   const struct agx_macos_command_infrastructure *infrastructure)
+{
+   if (!agx_macos_device_session_is_current(session) || !infrastructure ||
+       !infrastructure->initialized ||
+       infrastructure->api_generation != session->api_generation) {
+      return false;
+   }
+
+   for (unsigned i = 0; i < AGX_MACOS_COMMAND_PAIR_COUNT; ++i) {
+      if (!agx_macos_command_pair_is_valid(&infrastructure->pairs[i]))
+         return false;
+   }
+
+   return true;
+}
+
 static kern_return_t
 agx_macos_command_pair_call(io_connect_t connection, uint32_t selector,
                             const uint64_t *input, uint32_t input_count,
@@ -45,10 +64,8 @@ agx_macos_command_infrastructure_init(
    struct agx_macos_command_infrastructure configured = {0};
    kern_return_t result;
 
-   if (!session || !infrastructure || infrastructure->initialized ||
-       session->profile != AGX_MACOS_DEVICE_PROFILE_T6040_G16S_USC3 ||
-       session->device.connection == IO_OBJECT_NULL || !session->api_configured ||
-       session->api_generation == 0) {
+   if (!agx_macos_device_session_is_current(session) || !infrastructure ||
+       infrastructure->initialized) {
       return kIOReturnBadArgument;
    }
 
@@ -69,6 +86,9 @@ agx_macos_command_infrastructure_init(
 
    configured.api_generation = session->api_generation;
    configured.initialized = true;
+   if (!agx_macos_command_infrastructure_is_current(session, &configured))
+      return kIOReturnBadArgument;
+
    *infrastructure = configured;
    return KERN_SUCCESS;
 }

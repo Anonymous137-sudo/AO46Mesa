@@ -8,6 +8,7 @@
 #include "agx_macos_submission_observation.h"
 #include "agx_macos_submission_lease.h"
 
+#include <limits.h>
 #include <stddef.h>
 #include <string.h>
 
@@ -57,7 +58,28 @@ agx_macos_notification_queue_cleanup_partial(io_connect_t connection, uint32_t i
       connection, AGX_MACOS_SELECTOR_RELEASE_QUEUE_NOTIFICATION, id);
 
    /* The final kernel teardown selector is not validated for direct queues.
-    * The caller must close the owning session after a partial-create failure. */
+     * The caller must close the owning session after a partial-create failure. */
+}
+
+static bool
+agx_macos_notification_queue_is_active(
+   const struct agx_macos_notification_queue *queue)
+{
+   return queue && queue->connection != IO_OBJECT_NULL && queue->data_queue &&
+          queue->notification_port != MACH_PORT_NULL && queue->id != 0 &&
+          queue->api_generation != 0 &&
+          queue->release_state == AGX_MACOS_NOTIFICATION_QUEUE_ACTIVE;
+}
+
+bool
+agx_macos_notification_queue_is_current(
+   const struct agx_macos_device_session *session,
+   const struct agx_macos_notification_queue *queue)
+{
+   return agx_macos_device_session_is_current(session) && queue &&
+          agx_macos_notification_queue_is_active(queue) &&
+          queue->connection == session->device.connection &&
+          queue->api_generation == session->api_generation;
 }
 
 kern_return_t
@@ -75,9 +97,8 @@ agx_macos_notification_queue_create(
    mach_port_t notification_port;
    kern_return_t result;
 
-   if (!session || !queue || queue->connection != IO_OBJECT_NULL ||
-       session->profile != AGX_MACOS_DEVICE_PROFILE_T6040_G16S_USC3 ||
-       session->device.connection == IO_OBJECT_NULL || !session->api_configured) {
+   if (!agx_macos_device_session_is_current(session) || !queue ||
+       queue->connection != IO_OBJECT_NULL) {
       return kIOReturnBadArgument;
    }
 
@@ -122,6 +143,7 @@ agx_macos_notification_queue_create(
       .data_queue = (IODataQueueMemory *)(uintptr_t)response.data_queue,
       .notification_port = notification_port,
       .id = response.id,
+      .api_generation = session->api_generation,
       .release_state = AGX_MACOS_NOTIFICATION_QUEUE_ACTIVE,
    };
    return KERN_SUCCESS;
@@ -140,6 +162,9 @@ agx_macos_notification_queue_begin_destroy(struct agx_macos_notification_queue *
    if (!queue || queue->connection == IO_OBJECT_NULL || queue->id == 0) {
       return kIOReturnBadArgument;
    }
+
+   if (queue->in_flight_submission_count != 0)
+      return kIOReturnBusy;
 
    if (queue->release_state == AGX_MACOS_NOTIFICATION_QUEUE_ACTIVE) {
       result = agx_macos_notification_queue_call_release_selector(
@@ -226,6 +251,7 @@ agx_macos_notification_queue_destroy(struct agx_macos_notification_queue *queue)
 
 kern_return_t
 agx_macos_notification_queue_get_state(
+   const struct agx_macos_device_session *session,
    const struct agx_macos_notification_queue *queue,
    struct agx_macos_notification_queue_state *state)
 {
@@ -233,10 +259,7 @@ agx_macos_notification_queue_get_state(
    uint32_t head;
    uint32_t tail;
 
-   if (!queue || !state || queue->connection == IO_OBJECT_NULL ||
-       !queue->data_queue || queue->notification_port == MACH_PORT_NULL ||
-       queue->id == 0 ||
-       queue->release_state != AGX_MACOS_NOTIFICATION_QUEUE_ACTIVE) {
+   if (!agx_macos_notification_queue_is_current(session, queue) || !state) {
       return kIOReturnBadArgument;
    }
 
@@ -256,13 +279,12 @@ agx_macos_notification_queue_get_state(
 
 kern_return_t
 agx_macos_notification_queue_poll(
+   const struct agx_macos_device_session *session,
    const struct agx_macos_notification_queue *queue, void *record,
    uint32_t *record_size)
 {
-   if (!queue || !record || !record_size || *record_size == 0 ||
-       queue->connection == IO_OBJECT_NULL || !queue->data_queue ||
-       queue->notification_port == MACH_PORT_NULL || queue->id == 0 ||
-       queue->release_state != AGX_MACOS_NOTIFICATION_QUEUE_ACTIVE) {
+   if (!agx_macos_notification_queue_is_current(session, queue) || !record ||
+       !record_size || *record_size == 0) {
       return kIOReturnBadArgument;
    }
 
@@ -271,17 +293,19 @@ agx_macos_notification_queue_poll(
 
 kern_return_t
 agx_macos_notification_queue_poll_completion(
+   const struct agx_macos_device_session *session,
    const struct agx_macos_notification_queue *queue,
    struct agx_macos_completion_record *record)
 {
-   uint32_t record_size = 0;
+   uint32_t record_size = sizeof(*record);
    kern_return_t result =
-      agx_macos_notification_queue_peek_completion(queue, record);
+      agx_macos_notification_queue_peek_completion(session, queue, record);
 
    if (result != KERN_SUCCESS)
       return result;
 
-   result = IODataQueueDequeue(queue->data_queue, NULL, &record_size);
+   result = agx_macos_notification_queue_poll(session, queue, record,
+                                              &record_size);
    if (result != KERN_SUCCESS)
       return result;
    if (record_size != sizeof(*record))
@@ -291,7 +315,24 @@ agx_macos_notification_queue_poll_completion(
 }
 
 kern_return_t
+agx_macos_notification_queue_bind_fence(
+   const struct agx_macos_device_session *session,
+   const struct agx_macos_notification_queue *queue,
+   struct agx_macos_submission_fence *fence)
+{
+   if (!agx_macos_notification_queue_is_current(session, queue) || !fence ||
+       fence->observation.queue_id != queue->id ||
+       fence->completed_token_mask != 0 || fence->queue_api_generation != 0) {
+      return kIOReturnBadArgument;
+   }
+
+   fence->queue_api_generation = queue->api_generation;
+   return KERN_SUCCESS;
+}
+
+kern_return_t
 agx_macos_notification_queue_poll_fence(
+   const struct agx_macos_device_session *session,
    const struct agx_macos_notification_queue *queue,
    struct agx_macos_submission_fence *fence, bool *out_complete)
 {
@@ -300,14 +341,16 @@ agx_macos_notification_queue_poll_fence(
    unsigned token_index;
    kern_return_t result;
 
-   if (!queue || !fence || !out_complete)
+   if (!agx_macos_notification_queue_is_current(session, queue) || !fence ||
+       !out_complete || fence->observation.queue_id != queue->id ||
+       fence->queue_api_generation != queue->api_generation)
       return kIOReturnBadArgument;
 
    *out_complete = agx_macos_submission_fence_is_complete(fence);
    if (*out_complete)
       return KERN_SUCCESS;
 
-   result = agx_macos_notification_queue_peek_completion(queue, &raw);
+   result = agx_macos_notification_queue_peek_completion(session, queue, &raw);
    if (result != KERN_SUCCESS)
       return result;
 
@@ -318,7 +361,7 @@ agx_macos_notification_queue_poll_fence(
       return kIOReturnBadArgument;
    }
 
-   result = agx_macos_notification_queue_poll_completion(queue, &raw);
+   result = agx_macos_notification_queue_poll_completion(session, queue, &raw);
    if (result != KERN_SUCCESS)
       return result;
 
@@ -332,7 +375,118 @@ agx_macos_notification_queue_poll_fence(
 }
 
 kern_return_t
+agx_macos_notification_queue_bind_lease(
+   const struct agx_macos_device_session *session,
+   struct agx_macos_notification_queue *queue,
+   struct agx_macos_submission_lease *lease)
+{
+   kern_return_t result;
+
+   if (!lease || !lease->active ||
+       lease->state != AGX_MACOS_SUBMISSION_LEASE_ADMITTED ||
+       lease->queue_lease_bound)
+      return kIOReturnBadArgument;
+
+   result = agx_macos_notification_queue_bind_fence(session, queue,
+                                                     &lease->fence);
+   if (result != KERN_SUCCESS)
+      return result;
+
+   lease->queue_connection = queue->connection;
+   lease->bound_queue = queue;
+   lease->bound_queue_id = queue->id;
+   lease->bound_queue_api_generation = queue->api_generation;
+   lease->queue_lease_bound = true;
+   return KERN_SUCCESS;
+}
+
+kern_return_t
+agx_macos_notification_queue_admit_lease_submission(
+   struct agx_macos_notification_queue *queue,
+   struct agx_macos_submission_lease *lease)
+{
+   if (!agx_macos_notification_queue_is_active(queue) || !lease ||
+       !lease->active || !lease->queue_lease_bound ||
+       lease->bound_queue != queue ||
+       lease->queue_connection != queue->connection ||
+       lease->bound_queue_id != queue->id ||
+       lease->bound_queue_api_generation != queue->api_generation ||
+       lease->fence.observation.queue_id != queue->id ||
+       lease->fence.queue_api_generation != queue->api_generation ||
+       lease->queue_submission_serial != 0) {
+      return kIOReturnBadArgument;
+   }
+
+   if (queue->next_submission_serial == UINT64_MAX)
+      return kIOReturnNoResources;
+
+   lease->queue_submission_serial = ++queue->next_submission_serial;
+   ++queue->in_flight_submission_count;
+   return KERN_SUCCESS;
+}
+
+bool
+agx_macos_notification_queue_lease_can_retire_submission(
+   const struct agx_macos_notification_queue *queue,
+   const struct agx_macos_submission_lease *lease)
+{
+   return agx_macos_notification_queue_is_active(queue) && lease &&
+          lease->active && lease->bound_queue == queue &&
+          lease->queue_connection == queue->connection &&
+          lease->bound_queue_id == queue->id &&
+          lease->bound_queue_api_generation == queue->api_generation &&
+          lease->fence.observation.queue_id == queue->id &&
+          lease->fence.queue_api_generation == queue->api_generation &&
+          lease->state == AGX_MACOS_SUBMISSION_LEASE_IN_FLIGHT &&
+          lease->queue_submission_serial != 0 &&
+          queue->in_flight_submission_count != 0 &&
+          queue->retired_submission_serial != UINT64_MAX &&
+          lease->queue_submission_serial ==
+             queue->retired_submission_serial + 1;
+}
+
+kern_return_t
+agx_macos_notification_queue_retire_lease_submission(
+   struct agx_macos_notification_queue *queue,
+   struct agx_macos_submission_lease *lease)
+{
+   if (!agx_macos_notification_queue_lease_can_retire_submission(queue,
+                                                                   lease)) {
+      return kIOReturnNotPermitted;
+   }
+
+   queue->retired_submission_serial = lease->queue_submission_serial;
+   --queue->in_flight_submission_count;
+   return KERN_SUCCESS;
+}
+
+kern_return_t
+agx_macos_notification_queue_abandon_lease_submission(
+   struct agx_macos_notification_queue *queue,
+   struct agx_macos_submission_lease *lease)
+{
+   if (!queue || !lease || !lease->active || lease->bound_queue != queue ||
+       lease->queue_connection != queue->connection ||
+       lease->bound_queue_id != queue->id ||
+       lease->bound_queue_api_generation != queue->api_generation ||
+       lease->fence.observation.queue_id != queue->id ||
+       lease->fence.queue_api_generation != queue->api_generation ||
+       lease->queue_submission_serial == 0 ||
+       queue->in_flight_submission_count == 0) {
+      return kIOReturnBadArgument;
+   }
+
+   /* Device loss makes all outstanding order evidence unusable. The owning
+    * session invalidates this queue by generation, so a new queue is required
+    * before another lease can enter flight. */
+   queue->retired_submission_serial = queue->next_submission_serial;
+   --queue->in_flight_submission_count;
+   return KERN_SUCCESS;
+}
+
+kern_return_t
 agx_macos_notification_queue_poll_lease(
+   const struct agx_macos_device_session *session,
    const struct agx_macos_notification_queue *queue,
    struct agx_macos_submission_lease *lease, bool *out_complete)
 {
@@ -341,15 +495,23 @@ agx_macos_notification_queue_poll_lease(
    unsigned token_index;
    kern_return_t result;
 
-   if (!queue || !lease || !out_complete ||
-       lease->state != AGX_MACOS_SUBMISSION_LEASE_IN_FLIGHT)
+   if (!agx_macos_notification_queue_is_current(session, queue) || !lease ||
+       !lease->active || !out_complete ||
+       lease->state != AGX_MACOS_SUBMISSION_LEASE_IN_FLIGHT ||
+       !lease->queue_lease_bound ||
+       lease->bound_queue != queue || lease->queue_submission_serial == 0 ||
+       lease->queue_connection != queue->connection ||
+       lease->bound_queue_id != queue->id ||
+       lease->bound_queue_api_generation != queue->api_generation ||
+       lease->fence.observation.queue_id != queue->id ||
+       lease->fence.queue_api_generation != queue->api_generation)
       return kIOReturnBadArgument;
 
    *out_complete = agx_macos_submission_fence_is_complete(&lease->fence);
    if (!lease->active)
       return *out_complete ? KERN_SUCCESS : kIOReturnBadArgument;
 
-   result = agx_macos_notification_queue_peek_completion(queue, &raw);
+   result = agx_macos_notification_queue_peek_completion(session, queue, &raw);
    if (result != KERN_SUCCESS)
       return result;
 
@@ -360,7 +522,13 @@ agx_macos_notification_queue_poll_lease(
       return kIOReturnBadArgument;
    }
 
-   result = agx_macos_notification_queue_poll_completion(queue, &raw);
+   if ((lease->fence.completed_token_mask | (1u << token_index)) == 0x3 &&
+       !agx_macos_notification_queue_lease_can_retire_submission(queue,
+                                                                    lease)) {
+      return kIOReturnNotPermitted;
+   }
+
+   result = agx_macos_notification_queue_poll_completion(session, queue, &raw);
    if (result != KERN_SUCCESS)
       return result;
 
@@ -370,16 +538,14 @@ agx_macos_notification_queue_poll_lease(
 
 kern_return_t
 agx_macos_notification_queue_peek_completion(
+   const struct agx_macos_device_session *session,
    const struct agx_macos_notification_queue *queue,
    struct agx_macos_completion_record *record)
 {
    IODataQueueEntry *entry;
    uint32_t size;
 
-   if (!queue || !record || queue->connection == IO_OBJECT_NULL ||
-       !queue->data_queue || queue->notification_port == MACH_PORT_NULL ||
-       queue->id == 0 ||
-       queue->release_state != AGX_MACOS_NOTIFICATION_QUEUE_ACTIVE) {
+   if (!agx_macos_notification_queue_is_current(session, queue) || !record) {
       return kIOReturnBadArgument;
    }
 
@@ -397,17 +563,20 @@ agx_macos_notification_queue_peek_completion(
 
 kern_return_t
 agx_macos_notification_queue_drain_completions(
+   const struct agx_macos_device_session *session,
    const struct agx_macos_notification_queue *queue,
    struct agx_macos_completion_record *records, uint32_t capacity,
    uint32_t *count)
 {
-   if (!queue || !count || (capacity && !records))
+   if (!agx_macos_notification_queue_is_current(session, queue) || !count ||
+       (capacity && !records))
       return kIOReturnBadArgument;
 
    *count = 0;
    for (; *count < capacity; ++*count) {
       kern_return_t result =
-         agx_macos_notification_queue_poll_completion(queue, &records[*count]);
+         agx_macos_notification_queue_poll_completion(session, queue,
+                                                       &records[*count]);
 
       if (result == kIOReturnUnderrun)
          return KERN_SUCCESS;
@@ -426,6 +595,7 @@ agx_macos_notification_queue_release_for_session_close(
 
    if (!queue || queue->connection == IO_OBJECT_NULL ||
        queue->notification_port == MACH_PORT_NULL || queue->id == 0 ||
+       queue->in_flight_submission_count != 0 ||
        (queue->release_state != AGX_MACOS_NOTIFICATION_QUEUE_ACTIVE &&
         queue->release_state != AGX_MACOS_NOTIFICATION_QUEUE_DESTROY_REQUESTED)) {
       return kIOReturnBadArgument;

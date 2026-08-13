@@ -33,10 +33,8 @@ agx_macos_screen_bootstrap_init(
    struct agx_macos_screen_bootstrap bootstrap = {0};
    kern_return_t result;
 
-   if (!session || !out_bootstrap || out_bootstrap->initialized ||
-       session->profile != AGX_MACOS_DEVICE_PROFILE_T6040_G16S_USC3 ||
-       session->device.connection == IO_OBJECT_NULL || !session->api_configured ||
-       session->api_generation == 0) {
+   if (!agx_macos_device_session_is_current(session) || !out_bootstrap ||
+       out_bootstrap->initialized) {
       return kIOReturnBadArgument;
    }
 
@@ -45,17 +43,17 @@ agx_macos_screen_bootstrap_init(
       return result;
    bootstrap.bo_set_initialized = true;
 
-   result = agx_macos_command_infrastructure_init(
-      session, &bootstrap.command_infrastructure);
-   if (result != KERN_SUCCESS)
-      goto fail;
-   bootstrap.command_infrastructure_initialized = true;
-
    result = agx_macos_notification_queue_create(session,
                                                  &bootstrap.notification_queue);
    if (result != KERN_SUCCESS)
       goto fail;
    bootstrap.notification_queue_initialized = true;
+
+   result = agx_macos_command_infrastructure_init(
+      session, &bootstrap.command_infrastructure);
+   if (result != KERN_SUCCESS)
+      goto fail;
+   bootstrap.command_infrastructure_initialized = true;
 
    result = agx_macos_iosurface_create_rgba8(offscreen_width, offscreen_height,
                                               &bootstrap.offscreen);
@@ -81,17 +79,17 @@ bool
 agx_macos_screen_bootstrap_is_ready(
    const struct agx_macos_screen_bootstrap *bootstrap)
 {
-   return bootstrap && bootstrap->initialized && bootstrap->session &&
-          bootstrap->session->api_configured &&
+   return bootstrap && bootstrap->initialized &&
+          agx_macos_device_session_is_current(bootstrap->session) &&
           bootstrap->session->api_generation == bootstrap->api_generation &&
-          bootstrap->bo_set_initialized && bootstrap->bo_set.initialized &&
-          bootstrap->command_infrastructure_initialized &&
-          bootstrap->command_infrastructure.initialized &&
-          bootstrap->command_infrastructure.api_generation ==
-             bootstrap->api_generation &&
+          bootstrap->bo_set_initialized &&
+          agx_macos_bo_set_is_current(&bootstrap->bo_set, bootstrap->session) &&
           bootstrap->notification_queue_initialized &&
-          bootstrap->notification_queue.release_state ==
-             AGX_MACOS_NOTIFICATION_QUEUE_ACTIVE &&
+          agx_macos_notification_queue_is_current(
+             bootstrap->session, &bootstrap->notification_queue) &&
+          bootstrap->command_infrastructure_initialized &&
+          agx_macos_command_infrastructure_is_current(
+             bootstrap->session, &bootstrap->command_infrastructure) &&
           bootstrap->offscreen_initialized && bootstrap->offscreen.surface;
 }
 
@@ -109,6 +107,38 @@ agx_macos_screen_bootstrap_create_bo(
 }
 
 kern_return_t
+agx_macos_screen_bootstrap_resize_offscreen(
+   struct agx_macos_screen_bootstrap *bootstrap, uint32_t width,
+   uint32_t height)
+{
+   if (!agx_macos_screen_bootstrap_is_ready(bootstrap))
+      return kIOReturnBadArgument;
+
+   return agx_macos_iosurface_recreate_rgba8(&bootstrap->offscreen, width,
+                                              height);
+}
+
+kern_return_t
+agx_macos_screen_bootstrap_acquire_offscreen_lease(
+   const struct agx_macos_screen_bootstrap *bootstrap,
+   struct agx_macos_iosurface_lease *out_lease)
+{
+   if (!agx_macos_screen_bootstrap_is_ready(bootstrap))
+      return kIOReturnNotReady;
+
+   return agx_macos_iosurface_acquire_lease(&bootstrap->offscreen, out_lease);
+}
+
+bool
+agx_macos_screen_bootstrap_offscreen_lease_is_current(
+   const struct agx_macos_screen_bootstrap *bootstrap,
+   const struct agx_macos_iosurface_lease *lease)
+{
+   return agx_macos_screen_bootstrap_is_ready(bootstrap) &&
+          agx_macos_iosurface_lease_is_current(&bootstrap->offscreen, lease);
+}
+
+kern_return_t
 agx_macos_screen_bootstrap_destroy(
    struct agx_macos_screen_bootstrap *bootstrap)
 {
@@ -121,6 +151,10 @@ agx_macos_screen_bootstrap_destroy(
        !agx_macos_bo_set_is_idle(&bootstrap->bo_set)) {
       return kIOReturnBusy;
    }
+   if (bootstrap->offscreen_initialized &&
+       !agx_macos_iosurface_is_idle(&bootstrap->offscreen)) {
+      return kIOReturnBusy;
+   }
 
    if (bootstrap->notification_queue_initialized) {
       result = agx_macos_notification_queue_destroy(&bootstrap->notification_queue);
@@ -128,6 +162,12 @@ agx_macos_screen_bootstrap_destroy(
          return result;
       bootstrap->notification_queue_initialized = false;
    }
+
+   /* Command-pair replies do not have a traced destroy selector. They are
+    * generation-scoped values, so discard them only after queue teardown. */
+   bootstrap->command_infrastructure =
+      (struct agx_macos_command_infrastructure){0};
+   bootstrap->command_infrastructure_initialized = false;
 
    if (bootstrap->bo_set_initialized) {
       result = agx_macos_bo_set_cleanup(&bootstrap->bo_set);
@@ -137,14 +177,11 @@ agx_macos_screen_bootstrap_destroy(
    }
 
    if (bootstrap->offscreen_initialized) {
-      agx_macos_iosurface_destroy(&bootstrap->offscreen);
+      result = agx_macos_iosurface_destroy(&bootstrap->offscreen);
+      if (result != KERN_SUCCESS)
+         return result;
       bootstrap->offscreen_initialized = false;
    }
-
-   /* The opaque command-pair setup is scoped to the AGX session. Its observed
-    * teardown is session close, after this bootstrap has released its BOs and
-    * notification queue. */
-   bootstrap->command_infrastructure_initialized = false;
 
    *bootstrap = (struct agx_macos_screen_bootstrap){0};
    return KERN_SUCCESS;

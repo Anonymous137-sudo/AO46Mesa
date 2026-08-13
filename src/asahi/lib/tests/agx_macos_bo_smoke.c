@@ -64,6 +64,20 @@ main(int argc, char **argv)
       return 1;
    }
 
+   {
+      struct agx_macos_bo unconfigured = {.connection = IO_OBJECT_NULL};
+
+      if (agx_macos_bo_create(&session, AGX_MACOS_BO_STORAGE_SHARED,
+                              AGX_MACOS_BO_SHARED_64K_SIZE,
+                              &unconfigured) != kIOReturnBadArgument) {
+         fputs("AGX_MACOS_BO_SMOKE allocated before traced API configuration\n",
+               stderr);
+         (void)agx_macos_bo_destroy(&unconfigured);
+         agx_macos_device_session_close(&session);
+         return 1;
+      }
+   }
+
    if (argc != 1 ||
        agx_macos_device_session_configure_traced_api(&session, argv[0]) !=
           KERN_SUCCESS) {
@@ -91,6 +105,28 @@ main(int argc, char **argv)
          return 1;
       }
 
+      if (!agx_macos_bo_set_is_current(&set, &session)) {
+         fputs("AGX_MACOS_BO_SMOKE live BO set generation ownership failed\n",
+               stderr);
+         (void)agx_macos_bo_set_cleanup(&set);
+         agx_macos_device_session_close(&session);
+         return 1;
+      }
+
+      ++set.api_generation;
+      if (agx_macos_bo_set_is_current(&set, &session) ||
+          agx_macos_bo_set_create_at_least(
+             &set, AGX_MACOS_BO_STORAGE_SHARED,
+             AGX_MACOS_BO_SHARED_64K_SIZE, 1, &resources[0]) !=
+             kIOReturnBadArgument) {
+         fputs("AGX_MACOS_BO_SMOKE accepted a stale BO set\n", stderr);
+         --set.api_generation;
+         (void)agx_macos_bo_set_cleanup(&set);
+         agx_macos_device_session_close(&session);
+         return 1;
+      }
+      --set.api_generation;
+
       for (unsigned i = 0; i < sizeof(resources) / sizeof(resources[0]); ++i) {
          kern_return_t result = agx_macos_bo_set_create_at_least(
             &set, storage[i], AGX_MACOS_BO_SHARED_64K_SIZE,
@@ -105,6 +141,30 @@ main(int argc, char **argv)
             return 1;
          }
       }
+
+      ++set.api_generation;
+      if (agx_macos_bo_set_lookup_handle(&set, resources[0].handle,
+                                         &resources[0]) != kIOReturnBadArgument ||
+          agx_macos_bo_set_lookup_gpu_va(&set, resources[0].gpu_va,
+                                         &resources[0]) != kIOReturnBadArgument ||
+          agx_macos_bo_set_lookup_gpu_va_range(
+             &set, resources[0].gpu_va, 1, &resources[0]) !=
+             kIOReturnBadArgument ||
+          agx_macos_bo_set_retain_submission(&set, resources[0].handle) !=
+             kIOReturnBadArgument ||
+          agx_macos_bo_set_retain_submission_range(
+             &set, resources[0].gpu_va, 1) != kIOReturnBadArgument ||
+          agx_macos_bo_set_map_range(
+             &set, resources[0].handle, 0, 1,
+             &(struct agx_macos_bo_mapping){0}) != kIOReturnBadArgument) {
+         fputs("AGX_MACOS_BO_SMOKE stale BO admission was not rejected\n",
+               stderr);
+         --set.api_generation;
+         (void)agx_macos_bo_set_cleanup(&set);
+         agx_macos_device_session_close(&session);
+         return 1;
+      }
+      --set.api_generation;
 
       if (resources[0].handle == resources[1].handle ||
           resources[0].handle == resources[2].handle ||
@@ -166,10 +226,6 @@ main(int argc, char **argv)
          uint8_t carrier[AGX_MACOS_SUBMISSION_CARRIER_AUXILIARY_OFFSET +
                          AGX_MACOS_SUBMISSION_CARRIER_EXTENDED_READABLE_PREFIX] = {0};
          const uint64_t opaque_pointer_slot = UINT64_C(0x1ff800000);
-         struct agx_macos_completion_record_observed completion = {
-            .token = descriptor.completion_tokens[1],
-         };
-         bool complete = false;
 
          memcpy(carrier, &descriptor, sizeof(descriptor));
          memcpy(carrier + AGX_MACOS_SUBMISSION_CARRIER_AUXILIARY_OFFSET +
@@ -181,16 +237,13 @@ main(int argc, char **argv)
                 carrier + AGX_MACOS_SUBMISSION_CARRIER_AUXILIARY_OFFSET,
                 AGX_MACOS_SUBMISSION_CARRIER_EXTENDED_READABLE_PREFIX, ranges,
                 sizeof(ranges) / sizeof(ranges[0])) != KERN_SUCCESS ||
-             agx_macos_submission_lease_mark_submitted(&lease) != KERN_SUCCESS ||
+             agx_macos_submission_lease_mark_submitted(&lease) !=
+                kIOReturnNotPermitted ||
              agx_macos_bo_set_destroy(&set, &resources[0]) != kIOReturnBusy ||
              agx_macos_bo_set_destroy(&set, &resources[1]) != kIOReturnBusy ||
-             agx_macos_submission_lease_record_completion(
-                &lease, 8, &completion, &complete) != kIOReturnBadArgument ||
-             complete ||
-             agx_macos_submission_lease_record_completion(
-                &lease, 7, &completion, &complete) != KERN_SUCCESS ||
-             complete ||
-             agx_macos_bo_set_destroy(&set, &resources[0]) != kIOReturnBusy) {
+             agx_macos_submission_lease_release(&lease) != KERN_SUCCESS ||
+             lease.active || set.entries[0].in_flight_count != 0 ||
+             set.entries[1].in_flight_count != 0) {
             fputs("AGX_MACOS_BO_SMOKE submission lease admission failed\n", stderr);
             (void)agx_macos_submission_lease_release(&lease);
             (void)agx_macos_bo_set_cleanup(&set);
@@ -198,12 +251,7 @@ main(int argc, char **argv)
             return 1;
          }
 
-         completion.token = descriptor.completion_tokens[0];
-         if (agx_macos_submission_lease_record_completion(
-                &lease, 7, &completion, &complete) != KERN_SUCCESS ||
-             !complete || lease.active ||
-             agx_macos_submission_lease_release(&lease) != kIOReturnBadArgument ||
-             agx_macos_submission_lease_init_from_carrier(
+         if (agx_macos_submission_lease_init_from_carrier(
                 &lease, &set, 7, carrier, sizeof(descriptor),
                 carrier + AGX_MACOS_SUBMISSION_CARRIER_AUXILIARY_OFFSET,
                 AGX_MACOS_SUBMISSION_CARRIER_EXTENDED_READABLE_PREFIX,
@@ -214,7 +262,7 @@ main(int argc, char **argv)
                 KERN_SUCCESS ||
              agx_macos_bo_set_release_submission(&set, resources[2].handle) !=
                 KERN_SUCCESS) {
-            fputs("AGX_MACOS_BO_SMOKE submission lease completion failed\n",
+            fputs("AGX_MACOS_BO_SMOKE submission lease rollback failed\n",
                   stderr);
             (void)agx_macos_bo_set_cleanup(&set);
             agx_macos_device_session_close(&session);
@@ -353,7 +401,8 @@ main(int argc, char **argv)
       if (bo.storage == AGX_MACOS_BO_STORAGE_PRIVATE) {
          void *cpu;
 
-         if (agx_macos_bo_map(&bo, 0, 1, &cpu) != kIOReturnBadArgument) {
+         if (agx_macos_bo_map(&session, &bo, 0, 1, &cpu) !=
+             kIOReturnBadArgument) {
             fputs("AGX_MACOS_BO_SMOKE private BO unexpectedly mapped\n", stderr);
             agx_macos_bo_destroy(&bo);
             agx_macos_device_session_close(&session);
@@ -367,7 +416,8 @@ main(int argc, char **argv)
          uint8_t *first;
          uint8_t *last;
 
-         if (agx_macos_bo_map(&bo, 0, sizeof(pattern), &mapped) != KERN_SUCCESS) {
+         if (agx_macos_bo_map(&session, &bo, 0, sizeof(pattern), &mapped) !=
+             KERN_SUCCESS) {
             fputs("AGX_MACOS_BO_SMOKE CPU map validation failed\n", stderr);
             agx_macos_bo_destroy(&bo);
             agx_macos_device_session_close(&session);
@@ -375,9 +425,23 @@ main(int argc, char **argv)
          }
          first = mapped;
 
-         if (agx_macos_bo_map(&bo, bo.size - sizeof(pattern), sizeof(pattern),
-                              &mapped) != KERN_SUCCESS ||
-             agx_macos_bo_map(&bo, bo.size, 1, &mapped) != kIOReturnBadArgument) {
+         {
+            struct agx_macos_device_session stale_session = session;
+
+            ++stale_session.api_generation;
+            if (agx_macos_bo_map(&stale_session, &bo, 0, 1, &mapped) !=
+                kIOReturnBadArgument) {
+               fputs("AGX_MACOS_BO_SMOKE mapped a stale direct BO\n", stderr);
+               agx_macos_bo_destroy(&bo);
+               agx_macos_device_session_close(&session);
+               return 1;
+            }
+         }
+
+         if (agx_macos_bo_map(&session, &bo, bo.size - sizeof(pattern),
+                              sizeof(pattern), &mapped) != KERN_SUCCESS ||
+             agx_macos_bo_map(&session, &bo, bo.size, 1, &mapped) !=
+                kIOReturnBadArgument) {
             fputs("AGX_MACOS_BO_SMOKE CPU map validation failed\n", stderr);
             agx_macos_bo_destroy(&bo);
             agx_macos_device_session_close(&session);

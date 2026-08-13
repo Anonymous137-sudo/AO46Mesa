@@ -7,6 +7,7 @@
 
 #include "agx_macos_device.h"
 
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -162,11 +163,22 @@ main(void)
          return 1;
       }
 
+      /* Object identity is logged only for the bounded private-winsys trace.
+       * It lets the analyzer distinguish a direct buffer reference from an
+       * Apple-owned lower resource wrapper in carrier descriptor records. */
+      printf("AO46_AGX_COMPUTE_RECORD public-resource name=input"
+             " object=%p gpu_va=%#" PRIx64 " bytes=%u\n",
+             input, (uint64_t)input.gpuAddress, trace_buffer_size);
+      printf("AO46_AGX_COMPUTE_RECORD public-resource name=output"
+             " object=%p gpu_va=%#" PRIx64 " bytes=%u\n",
+             output, (uint64_t)output.gpuAddress, trace_buffer_size);
       for (unsigned i = 0; i < trace_element_count; ++i)
          input_values[i] = i * 0x1021u;
       memset(output_values, 0, trace_buffer_size);
 
-      puts("AO46_AGX_COMPUTE_RECORD dispatch transform-input-to-output");
+      printf("AO46_AGX_COMPUTE_RECORD dispatch transform-input-to-output"
+             " elements=%u threads_per_group=%u\n",
+             trace_element_count, 32u);
       if (!submit_compute(queue, pipeline, input, output)) {
          fputs("AO46_AGX_COMPUTE_RECORD compute dispatch failed\n", stderr);
          return 1;

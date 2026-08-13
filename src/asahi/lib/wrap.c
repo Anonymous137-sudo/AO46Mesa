@@ -4,6 +4,7 @@
  */
 #include <assert.h>
 #include <dlfcn.h>
+#include <execinfo.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <stdint.h>
@@ -78,6 +79,7 @@ enum agx_selector {
 #define AGX_TRACE_AUX_RESOURCE_REFS 16
 #define AGX_TRACE_RESOURCE_SCAN_LIMIT (64 * 1024)
 #define AGX_TRACE_RESOURCE_SCAN_REFS 64
+#define AGX_TRACE_CALLER_MAX_FRAMES 32
 
 /* Fields isolated from controlled Metal buffer allocations. The remaining
  * bytes stay opaque until their UABI semantics are independently verified. */
@@ -562,6 +564,76 @@ agx_trace_fingerprint(const uint8_t *data, size_t length)
    return hash;
 }
 
+/* Keep the complete bounded carrier available for offline comparison when a
+ * controlled workload needs to identify structural sidecar regions. This is
+ * deliberately opt-in: the wrapper remains a development capture tool and
+ * never consumes this data to construct or replay a submission. */
+static void
+agx_trace_report_aux_extended_hex(const uint8_t *data, size_t length)
+{
+   if (!getenv("AGX_TRACE_AUX_EXTENDED_HEX"))
+      return;
+
+   printf("MODERN_SUBMIT_AUX_EXTENDED_HEX bytes=%zu data=", length);
+   for (size_t i = 0; i < length; ++i)
+      printf("%02x", data[i]);
+   printf("\n");
+}
+
+/* Capture only the already-bounded, readable target of a sidecar pointer for
+ * offline graph analysis. This development wrapper never gives the runtime a
+ * pointer-target payload or a replay path. */
+static void
+agx_trace_report_aux_pointer_hex(size_t origin_offset, uint64_t pointer,
+                                 const uint8_t *data, size_t length)
+{
+   if (!getenv("AGX_TRACE_AUX_POINTER_HEX"))
+      return;
+
+   printf("MODERN_SUBMIT_AUX_POINTER_HEX offset=%#zx pointer=%#" PRIx64
+          " bytes=%zu data=", origin_offset, pointer, length);
+   for (size_t i = 0; i < length; ++i)
+      printf("%02x", data[i]);
+   printf("\n");
+}
+
+/* A pointer target made entirely of printable ASCII and NUL separators is
+ * host string data, not an AGX resource table. This is a trace classification
+ * for the current profile only; unknown targets stay unclassified. */
+static bool
+agx_trace_is_ascii_cstring_table(const uint8_t *data, size_t length)
+{
+   size_t nonzero = 0;
+   size_t separators = 0;
+
+   if (!data || length == 0)
+      return false;
+
+   for (size_t i = 0; i < length; ++i) {
+      if (data[i] == '\0') {
+         ++separators;
+      } else if (data[i] >= 0x20 && data[i] <= 0x7e) {
+         ++nonzero;
+      } else {
+         return false;
+      }
+   }
+
+   return nonzero >= length / 2 && separators >= 4;
+}
+
+static void
+agx_trace_report_aux_pointer_class(size_t origin_offset, const uint8_t *data,
+                                   size_t length)
+{
+   const char *classification =
+      agx_trace_is_ascii_cstring_table(data, length) ? "ascii-cstring-table"
+                                                     : "unclassified";
+
+   printf("MODERN_SUBMIT_AUX_POINTER_CLASS offset=%#zx class=%s\n",
+          origin_offset, classification);
+}
+
 /* Inspect mapped allocations only in the diagnostic wrapper. A changed mapped
  * allocation containing another allocation's GPU VA is a useful lead for the
  * command-resource ownership investigation, but is not a decoded command ABI. */
@@ -686,6 +758,10 @@ agx_trace_follow_aux_pointers(const uint8_t *data, size_t length)
 
       printf("MODERN_SUBMIT_AUX_POINTER offset=%#zx pointer=%p readable=%zu\n",
              offset, (const void *)(uintptr_t)value, readable);
+      agx_trace_report_aux_pointer_hex(
+         offset, value, (const void *)(uintptr_t)value, readable);
+      agx_trace_report_aux_pointer_class(offset, (const void *)(uintptr_t)value,
+                                         readable);
       agx_trace_report_aux_indirect_resource_refs(
          (const void *)(uintptr_t)value, readable, offset);
 
@@ -706,6 +782,76 @@ agx_trace_configure_output(void)
        * ordered with them when a trace needs lifecycle correlation. */
       setvbuf(stdout, NULL, _IONBF, 0);
       configured = true;
+   }
+}
+
+/* This is development-only attribution for controlled traces. A return
+ * address identifies the caller's image offset, not a callable ABI or a
+ * private object layout. Restrict output to the active AGXMetal image so the
+ * trace can be correlated with the local, profile-specific static inventory. */
+static void
+agx_trace_report_apple_callers(const char *operation, io_connect_t connection,
+                               uint32_t operation_id)
+{
+   if (!getenv("AGX_TRACE_CALLERS"))
+      return;
+
+   void *frames[AGX_TRACE_CALLER_MAX_FRAMES];
+   const int frame_count = backtrace(frames, AGX_TRACE_CALLER_MAX_FRAMES);
+   bool found = false;
+
+   for (int i = 0; i < frame_count; ++i) {
+      Dl_info info = {};
+
+      if (!dladdr(frames[i], &info) || !info.dli_fname || !info.dli_fbase ||
+          !strstr(info.dli_fname, "AGXMetal")) {
+         continue;
+      }
+
+      const uintptr_t offset = (uintptr_t)frames[i] - (uintptr_t)info.dli_fbase;
+      const uintptr_t symbol_offset =
+         info.dli_saddr ? (uintptr_t)frames[i] - (uintptr_t)info.dli_saddr : 0;
+
+      printf("AGX_TRACE_CALLER operation=%s connection=%#x id=%#x frame=%d"
+             " image=%s offset=%#" PRIxPTR " symbol=%s symbol_offset=%#" PRIxPTR
+             "\n",
+             operation, connection, operation_id, i, info.dli_fname, offset,
+             info.dli_sname ? info.dli_sname : "-", symbol_offset);
+      found = true;
+   }
+
+   if (!found) {
+      printf("AGX_TRACE_CALLER operation=%s connection=%#x id=%#x"
+             " image=none\n",
+             operation, connection, operation_id);
+
+      /* A submission may cross into a shared-cache framework after AGXMetal
+       * assembles its command data. Emit a bounded fallback stack only when
+       * requested, so the trace can locate that layer without turning normal
+       * captures into a general process backtrace. */
+      if (!getenv("AGX_TRACE_CALLER_FALLBACK_IMAGES"))
+         return;
+
+      for (int i = 0; i < frame_count; ++i) {
+         Dl_info info = {};
+
+         if (!dladdr(frames[i], &info) || !info.dli_fname || !info.dli_fbase ||
+             strstr(info.dli_fname, "libwrap.dylib")) {
+            continue;
+         }
+
+         const uintptr_t offset =
+            (uintptr_t)frames[i] - (uintptr_t)info.dli_fbase;
+         const uintptr_t symbol_offset =
+            info.dli_saddr ? (uintptr_t)frames[i] - (uintptr_t)info.dli_saddr
+                           : 0;
+
+         printf("AGX_TRACE_CALLER_FALLBACK operation=%s connection=%#x"
+                " id=%#x frame=%d image=%s offset=%#" PRIxPTR
+                " symbol=%s symbol_offset=%#" PRIxPTR "\n",
+                operation, connection, operation_id, i, info.dli_fname, offset,
+                info.dli_sname ? info.dli_sname : "-", symbol_offset);
+      }
    }
 }
 
@@ -735,6 +881,7 @@ wrap_Method(mach_port_t connection, uint32_t selector, const uint64_t *input,
    }
 
    printf("Selector %u, %X, %X\n", selector, connection, metal_connection);
+   agx_trace_report_apple_callers("method", connection, selector);
 
    /* Check the arguments make sense */
    assert((input != NULL) == (inputCnt != 0));
@@ -1238,6 +1385,9 @@ wrap_Trap4(io_connect_t connect, uint32_t index, uintptr_t p1, uintptr_t p2,
 {
    const char *trace_payloads = getenv("AGX_TRACE_TRAP_PAYLOADS");
 
+   if (connect == metal_connection)
+      agx_trace_report_apple_callers("trap4", connect, index);
+
    /* Metal submits through a fast IOKit trap on current macOS. Keep this as a
     * trace-only capture: p2 is the observed payload size, p3 is its address,
     * and p4 is a second opaque pointer. The cap prevents malformed inputs from
@@ -1254,6 +1404,18 @@ wrap_Trap4(io_connect_t connect, uint32_t index, uintptr_t p1, uintptr_t p2,
        index == 0 && p3 &&
        p2 == sizeof(struct agx_macos_submit_descriptor_observed)) {
       const struct agx_macos_submit_descriptor_observed *desc = (const void *)p3;
+      const size_t auxiliary_readable =
+         agx_trace_readable_prefix((const void *)p4, AGX_TRACE_AUX_PREFIX_LIMIT);
+      struct agx_macos_submission_trap_observation transport;
+      const bool transport_valid =
+         agx_macos_submission_trap_observation_decode(
+            index, p1, p2, p3, p4, auxiliary_readable, &transport);
+
+      printf("MODERN_TRAP4_TRANSPORT queue=%" PRIuPTR
+             " index=%u descriptor_bytes=%" PRIuPTR " carrier_offset=%" PRIdPTR
+             " carrier_prefix=%zu valid=%u\n",
+             p1, index, p2, (intptr_t)p4 - (intptr_t)p3, auxiliary_readable,
+             transport_valid);
 
       printf("MODERN_SUBMIT queue=%" PRIuPTR " header=%u/%u"
              " completion0=%" PRIx64 " completion1=%" PRIx64 "\n",
@@ -1264,8 +1426,7 @@ wrap_Trap4(io_connect_t connect, uint32_t index, uintptr_t p1, uintptr_t p2,
          agx_trace_report_mapped_resource_refs();
 
       if (getenv("AGX_TRACE_TRAP_AUX")) {
-         size_t readable =
-            agx_trace_readable_prefix((const void *)p4, AGX_TRACE_AUX_PREFIX_LIMIT);
+         size_t readable = auxiliary_readable;
          intptr_t descriptor_offset = (intptr_t)p4 - (intptr_t)p3;
          struct agx_macos_submission_carrier_snapshot snapshot;
 
@@ -1305,6 +1466,8 @@ wrap_Trap4(io_connect_t connect, uint32_t index, uintptr_t p1, uintptr_t p2,
                   printf("MODERN_SUBMIT_AUX_EXTENDED bytes=%zu\n", extended);
                   agx_trace_report_aux_resource_refs((const void *)p4,
                                                      readable, extended);
+                  agx_trace_report_aux_extended_hex((const void *)p4,
+                                                    extended);
 
                   if (p1 <= UINT32_MAX &&
                       agx_macos_submission_carrier_extended_snapshot_capture(

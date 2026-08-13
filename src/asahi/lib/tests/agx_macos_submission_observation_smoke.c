@@ -19,6 +19,7 @@ main(void)
    struct agx_macos_submission_observation observation = {0};
    struct agx_macos_submission_fence fence = {0};
    struct agx_macos_submission_carrier_observation carrier_observation = {0};
+   struct agx_macos_submission_trap_observation trap_observation = {0};
    struct agx_macos_submission_carrier_snapshot carrier_snapshot = {0};
    struct agx_macos_submission_carrier_extended_snapshot
       extended_snapshot = {0};
@@ -86,6 +87,34 @@ main(void)
       return 1;
    }
 
+   if (!agx_macos_submission_trap_observation_decode(
+          0, 7, sizeof(input), (uintptr_t)carrier,
+          (uintptr_t)(carrier + AGX_MACOS_SUBMISSION_CARRIER_AUXILIARY_OFFSET),
+          AGX_MACOS_SUBMISSION_CARRIER_MIN_READABLE_PREFIX,
+          &trap_observation) ||
+       trap_observation.trap_index != 0 ||
+       trap_observation.descriptor_size != sizeof(input) ||
+       trap_observation.carrier.submission.queue_id != 7 ||
+       agx_macos_submission_trap_observation_decode(
+          1, 7, sizeof(input), (uintptr_t)carrier,
+          (uintptr_t)(carrier + AGX_MACOS_SUBMISSION_CARRIER_AUXILIARY_OFFSET),
+          AGX_MACOS_SUBMISSION_CARRIER_MIN_READABLE_PREFIX,
+          &trap_observation) ||
+       agx_macos_submission_trap_observation_decode(
+          0, 7, sizeof(input) - 1, (uintptr_t)carrier,
+          (uintptr_t)(carrier + AGX_MACOS_SUBMISSION_CARRIER_AUXILIARY_OFFSET),
+          AGX_MACOS_SUBMISSION_CARRIER_MIN_READABLE_PREFIX,
+          &trap_observation) ||
+       agx_macos_submission_trap_observation_decode(
+          0, UINT64_C(0x100000000), sizeof(input), (uintptr_t)carrier,
+          (uintptr_t)(carrier + AGX_MACOS_SUBMISSION_CARRIER_AUXILIARY_OFFSET),
+          AGX_MACOS_SUBMISSION_CARRIER_MIN_READABLE_PREFIX,
+          &trap_observation)) {
+      fputs("AGX_MACOS_SUBMISSION_OBSERVATION_SMOKE Trap4 transport validation failed\n",
+            stderr);
+      return 1;
+   }
+
    if (!agx_macos_submission_carrier_extended_snapshot_capture(
           7, carrier, sizeof(input),
           carrier + AGX_MACOS_SUBMISSION_CARRIER_AUXILIARY_OFFSET,
@@ -94,12 +123,29 @@ main(void)
        extended_snapshot.observation.auxiliary_readable_prefix !=
           AGX_MACOS_SUBMISSION_CARRIER_EXTENDED_READABLE_PREFIX ||
        extended_snapshot.opaque_pointer_slot != opaque_pointer_slot ||
+       !agx_macos_submission_carrier_extended_snapshot_is_intact(
+          &extended_snapshot) ||
        agx_macos_submission_carrier_extended_snapshot_capture(
           7, carrier, sizeof(input),
           carrier + AGX_MACOS_SUBMISSION_CARRIER_AUXILIARY_OFFSET,
           AGX_MACOS_SUBMISSION_CARRIER_EXTENDED_READABLE_PREFIX - 1,
           &extended_snapshot)) {
       fputs("AGX_MACOS_SUBMISSION_OBSERVATION_SMOKE extended carrier validation failed\n",
+            stderr);
+      return 1;
+   }
+
+   extended_snapshot.auxiliary_prefix[0] ^= 1;
+   if (agx_macos_submission_carrier_extended_snapshot_is_intact(
+          &extended_snapshot)) {
+      fputs("AGX_MACOS_SUBMISSION_OBSERVATION_SMOKE accepted mutated evidence\n",
+            stderr);
+      return 1;
+   }
+   extended_snapshot.auxiliary_prefix[0] ^= 1;
+   if (!agx_macos_submission_carrier_extended_snapshot_is_intact(
+          &extended_snapshot)) {
+      fputs("AGX_MACOS_SUBMISSION_OBSERVATION_SMOKE rejected restored evidence\n",
             stderr);
       return 1;
    }
@@ -111,6 +157,8 @@ main(void)
    invalid_input.header0 = 0;
    if (carrier_snapshot.auxiliary_prefix[0] != 0xa5 ||
        extended_snapshot.opaque_pointer_slot != opaque_pointer_slot ||
+       !agx_macos_submission_carrier_extended_snapshot_is_intact(
+          &extended_snapshot) ||
        agx_macos_submission_carrier_snapshot_capture(
           7, carrier, sizeof(input),
           carrier + AGX_MACOS_SUBMISSION_CARRIER_AUXILIARY_OFFSET,

@@ -4,6 +4,7 @@
  */
 
 #include "agx_macos_submission_lease.h"
+#include "agx_macos_queue.h"
 
 #include <string.h>
 
@@ -34,12 +35,7 @@ agx_macos_submission_lease_release(struct agx_macos_submission_lease *lease)
       --lease->handle_count;
    }
 
-   lease->bo_set = NULL;
-   lease->carrier_snapshot =
-      (struct agx_macos_submission_carrier_extended_snapshot){0};
-   lease->has_carrier_snapshot = false;
-   lease->active = false;
-   lease->state = AGX_MACOS_SUBMISSION_LEASE_NONE;
+   *lease = (struct agx_macos_submission_lease){0};
    return KERN_SUCCESS;
 }
 
@@ -53,7 +49,8 @@ agx_macos_submission_lease_init(
    struct agx_macos_submission_fence fence;
    kern_return_t result = KERN_SUCCESS;
 
-   if (!out_lease || out_lease->active || !bo_set || !bo_set->initialized ||
+   if (!out_lease || out_lease->active || !bo_set ||
+       !agx_macos_bo_set_is_current(bo_set, bo_set->session) ||
        range_count > AGX_MACOS_SUBMISSION_LEASE_MAX_RANGES ||
        (range_count && !ranges) ||
        !agx_macos_submission_fence_init(queue_id, descriptor_bytes,
@@ -137,12 +134,28 @@ kern_return_t
 agx_macos_submission_lease_mark_submitted(
    struct agx_macos_submission_lease *lease)
 {
+   kern_return_t result;
+
    if (!lease || !lease->active || !lease->bo_set ||
-       lease->state != AGX_MACOS_SUBMISSION_LEASE_ADMITTED)
+       lease->state != AGX_MACOS_SUBMISSION_LEASE_ADMITTED ||
+       !agx_macos_bo_set_is_current(lease->bo_set, lease->bo_set->session))
       return kIOReturnBadArgument;
 
-   if (!lease->has_carrier_snapshot)
+   if (!lease->has_carrier_snapshot || !lease->queue_lease_bound ||
+       !lease->bound_queue || lease->queue_submission_serial != 0 ||
+       lease->queue_connection == IO_OBJECT_NULL ||
+       lease->bound_queue_id != lease->fence.observation.queue_id ||
+       lease->bound_queue_api_generation == 0 ||
+       lease->bound_queue_api_generation != lease->fence.queue_api_generation ||
+       lease->fence.completed_token_mask != 0 ||
+      !agx_macos_submission_carrier_extended_snapshot_is_intact(
+          &lease->carrier_snapshot))
       return kIOReturnNotPermitted;
+
+   result = agx_macos_notification_queue_admit_lease_submission(
+      lease->bound_queue, lease);
+   if (result != KERN_SUCCESS)
+      return result;
 
    lease->state = AGX_MACOS_SUBMISSION_LEASE_IN_FLIGHT;
    return KERN_SUCCESS;
@@ -152,8 +165,17 @@ kern_return_t
 agx_macos_submission_lease_abandon_after_device_loss(
    struct agx_macos_submission_lease *lease)
 {
-   if (!lease || !lease->active ||
+   if (!lease || !lease->active || !lease->bo_set ||
        lease->state != AGX_MACOS_SUBMISSION_LEASE_IN_FLIGHT) {
+      return kIOReturnBadArgument;
+   }
+
+   /* A live BO set means the AGX session can still execute this lease. */
+   if (agx_macos_bo_set_is_current(lease->bo_set, lease->bo_set->session))
+      return kIOReturnBusy;
+
+   if (agx_macos_notification_queue_abandon_lease_submission(
+          lease->bound_queue, lease) != KERN_SUCCESS) {
       return kIOReturnBadArgument;
    }
 
@@ -167,12 +189,49 @@ agx_macos_submission_lease_record_completion(
    const struct agx_macos_completion_record_observed *record,
    bool *out_complete)
 {
-   if (!lease || !lease->active || !record || !out_complete ||
-       lease->state != AGX_MACOS_SUBMISSION_LEASE_IN_FLIGHT) {
+   unsigned token_index;
+   uint8_t token_bit;
+   bool final_completion;
+
+   if (!out_complete)
+      return kIOReturnBadArgument;
+
+   *out_complete = false;
+   if (!lease || !lease->active || !record ||
+       lease->state != AGX_MACOS_SUBMISSION_LEASE_IN_FLIGHT ||
+       !lease->bo_set ||
+       !agx_macos_bo_set_is_current(lease->bo_set, lease->bo_set->session)) {
       return kIOReturnBadArgument;
    }
 
-   *out_complete = false;
+   if (!lease->queue_lease_bound ||
+       !lease->bound_queue || lease->queue_submission_serial == 0 ||
+       lease->queue_connection == IO_OBJECT_NULL ||
+       lease->bound_queue_id != completion_queue_id ||
+       lease->bound_queue_id != lease->fence.observation.queue_id ||
+       lease->bound_queue_api_generation == 0 ||
+       lease->bound_queue_api_generation != lease->fence.queue_api_generation) {
+      return kIOReturnBadArgument;
+   }
+
+   if (!agx_macos_submission_observation_matches_completion(
+          &lease->fence.observation, completion_queue_id, record,
+          &token_index)) {
+      return kIOReturnBadArgument;
+   }
+
+   token_bit = 1u << token_index;
+   if (lease->fence.completed_token_mask & token_bit)
+      return kIOReturnBadArgument;
+
+   final_completion =
+      (lease->fence.completed_token_mask | token_bit) == UINT8_C(0x3);
+   if (final_completion &&
+       agx_macos_notification_queue_retire_lease_submission(
+          lease->bound_queue, lease) != KERN_SUCCESS) {
+      return kIOReturnNotPermitted;
+   }
+
    if (!agx_macos_submission_fence_record_completion(
           &lease->fence, completion_queue_id, record)) {
       return kIOReturnBadArgument;

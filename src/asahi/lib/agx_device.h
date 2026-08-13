@@ -18,6 +18,7 @@
 #include "decode.h"
 #include "layout.h"
 #include "libagx_dgc.h"
+#include "agx_submit.h"
 
 #include "vdrm.h"
 
@@ -79,9 +80,19 @@ typedef struct {
    ssize_t (*get_params)(struct agx_device *dev, void *buf, size_t size);
    int (*submit)(struct agx_device *dev, struct drm_asahi_submit *submit,
                  struct agx_submit_virt *virt);
+   /* A non-Linux winsys consumes finalized AGX work through this neutral
+    * submission description. Linux keeps using submit above as its UAPI
+    * serializer/transport. */
+   int (*submit_info)(struct agx_device *dev,
+                      const struct agx_submit_info *info,
+                      struct agx_submit_virt *virt);
    int (*bo_bind_object)(struct agx_device *dev,
                          struct drm_asahi_gem_bind_object *bind);
    int (*bo_unbind_object)(struct agx_device *dev, uint32_t object_handle);
+   /* A non-DRM platform may expose only a subset of the operations above
+    * while its direct UABI is being validated. The macOS screen factory uses
+    * this positive admission check before it transfers device ownership. */
+   bool (*is_screen_ready)(struct agx_device *dev);
 } agx_device_ops_t;
 
 int agx_bo_bind(struct agx_device *dev, struct agx_bo *bo, uint64_t addr,
@@ -178,6 +189,10 @@ struct agx_device {
    } user_timestamp_to_ns;
 
    struct u_printf_ctx printf;
+
+   /* Platform-specific state owned by a non-DRM device adapter. Linux and
+    * virtio leave this NULL; macOS stores its direct AGX BO-set lifetime here. */
+   void *platform_data;
 };
 
 /*

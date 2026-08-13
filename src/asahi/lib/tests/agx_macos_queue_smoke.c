@@ -66,11 +66,32 @@ main(int argc, char **argv)
       }
       ++created_queues;
 
+      if (!agx_macos_notification_queue_is_current(&session, &queues[i]) ||
+          (i > 0 &&
+           agx_macos_notification_queue_is_current(&session, &queues[0]))) {
+         fputs("AGX_MACOS_QUEUE_SMOKE queue generation ownership failed\n",
+               stderr);
+         goto fail;
+      }
+
+      if (i > 0 &&
+          (agx_macos_notification_queue_get_state(&session, &queues[0], &state) !=
+              kIOReturnBadArgument ||
+           agx_macos_notification_queue_peek_completion(
+              &session, &queues[0], &completion) != kIOReturnBadArgument ||
+           agx_macos_notification_queue_poll_completion(
+              &session, &queues[0], &completion) != kIOReturnBadArgument)) {
+         fputs("AGX_MACOS_QUEUE_SMOKE stale queue access was admitted\n",
+               stderr);
+         goto fail;
+      }
+
       printf("AGX_MACOS_QUEUE_SMOKE created id=%u data_queue=%p port=%u\n",
              queues[i].id, (void *)queues[i].data_queue,
              queues[i].notification_port);
 
-      result = agx_macos_notification_queue_get_state(&queues[i], &state);
+      result = agx_macos_notification_queue_get_state(&session, &queues[i],
+                                                       &state);
       if (result != KERN_SUCCESS || state.head != state.tail) {
          fprintf(stderr, "AGX_MACOS_QUEUE_SMOKE unexpected queue %u state: %#x\n",
                  i, result);
@@ -80,7 +101,7 @@ main(int argc, char **argv)
       printf("AGX_MACOS_QUEUE_SMOKE empty id=%u capacity=%u head=%u tail=%u\n",
              queues[i].id, state.capacity, state.head, state.tail);
 
-      if (agx_macos_notification_queue_poll_completion(&queues[i],
+      if (agx_macos_notification_queue_poll_completion(&session, &queues[i],
                                                         &completion) !=
           kIOReturnUnderrun) {
          fprintf(stderr,
@@ -89,11 +110,11 @@ main(int argc, char **argv)
          goto fail;
       }
 
-      if (agx_macos_notification_queue_peek_completion(&queues[i],
+      if (agx_macos_notification_queue_peek_completion(&session, &queues[i],
                                                         &completion) !=
              kIOReturnUnderrun ||
           agx_macos_notification_queue_drain_completions(
-             &queues[i], completions,
+             &session, &queues[i], completions,
              sizeof(completions) / sizeof(completions[0]),
              &completion_count) != KERN_SUCCESS ||
           completion_count != 0) {

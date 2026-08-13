@@ -47,7 +47,9 @@ main(int argc, char **argv)
 
    result = agx_macos_command_infrastructure_init(&session, &infrastructure);
    if (result != KERN_SUCCESS || !infrastructure.initialized ||
-       infrastructure.api_generation != session.api_generation) {
+       infrastructure.api_generation != session.api_generation ||
+       !agx_macos_command_infrastructure_is_current(&session,
+                                                     &infrastructure)) {
       fprintf(stderr, "AGX_MACOS_COMMAND_SMOKE initialization failed: %#x\n",
               result);
       (void)agx_macos_notification_queue_release_for_session_close(&queue);
@@ -58,6 +60,27 @@ main(int argc, char **argv)
    for (unsigned i = 0; i < AGX_MACOS_COMMAND_PAIR_COUNT; ++i) {
       if (!infrastructure.pairs[i].value0 || !infrastructure.pairs[i].value1) {
          fputs("AGX_MACOS_COMMAND_SMOKE received an invalid pair\n", stderr);
+         (void)agx_macos_notification_queue_release_for_session_close(&queue);
+         agx_macos_device_session_close(&session);
+         return 1;
+      }
+   }
+
+   {
+      struct agx_macos_command_infrastructure stale = infrastructure;
+
+      stale.api_generation++;
+      if (agx_macos_command_infrastructure_is_current(&session, &stale)) {
+         fputs("AGX_MACOS_COMMAND_SMOKE accepted stale infrastructure\n", stderr);
+         (void)agx_macos_notification_queue_release_for_session_close(&queue);
+         agx_macos_device_session_close(&session);
+         return 1;
+      }
+
+      stale = infrastructure;
+      stale.pairs[AGX_MACOS_COMMAND_PAIR_COUNT - 1].value1 = 0;
+      if (agx_macos_command_infrastructure_is_current(&session, &stale)) {
+         fputs("AGX_MACOS_COMMAND_SMOKE accepted corrupt infrastructure\n", stderr);
          (void)agx_macos_notification_queue_release_for_session_close(&queue);
          agx_macos_device_session_close(&session);
          return 1;

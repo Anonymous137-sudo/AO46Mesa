@@ -301,6 +301,7 @@ agx_macos_device_session_open(struct agx_macos_device_session *session)
    *session = (struct agx_macos_device_session){
       .device = {.connection = IO_OBJECT_NULL},
       .profile = AGX_MACOS_DEVICE_PROFILE_UNSUPPORTED,
+      .state = AGX_MACOS_DEVICE_SESSION_STATE_CLOSED,
    };
 
    if (!agx_macos_device_open(&session->device))
@@ -319,6 +320,7 @@ agx_macos_device_session_open(struct agx_macos_device_session *session)
       return AGX_MACOS_DEVICE_SESSION_UNSUPPORTED;
    }
 
+   session->state = AGX_MACOS_DEVICE_SESSION_STATE_OPEN;
    return AGX_MACOS_DEVICE_SESSION_READY;
 }
 
@@ -332,7 +334,51 @@ agx_macos_device_session_close(struct agx_macos_device_session *session)
    *session = (struct agx_macos_device_session){
       .device = {.connection = IO_OBJECT_NULL},
       .profile = AGX_MACOS_DEVICE_PROFILE_UNSUPPORTED,
+      .state = AGX_MACOS_DEVICE_SESSION_STATE_CLOSED,
    };
+}
+
+bool
+agx_macos_device_session_is_open(const struct agx_macos_device_session *session)
+{
+   return session &&
+          (session->state == AGX_MACOS_DEVICE_SESSION_STATE_OPEN ||
+           session->state == AGX_MACOS_DEVICE_SESSION_STATE_CONFIGURED) &&
+          session->profile == AGX_MACOS_DEVICE_PROFILE_T6040_G16S_USC3 &&
+          session->device.connection != IO_OBJECT_NULL;
+}
+
+bool
+agx_macos_device_session_is_current(
+   const struct agx_macos_device_session *session)
+{
+   return agx_macos_device_session_is_open(session) &&
+          session->state == AGX_MACOS_DEVICE_SESSION_STATE_CONFIGURED &&
+          session->api_configured && session->api_generation != 0;
+}
+
+bool
+agx_macos_device_session_is_lost(
+   const struct agx_macos_device_session *session)
+{
+   return session && session->state == AGX_MACOS_DEVICE_SESSION_STATE_LOST;
+}
+
+bool
+agx_macos_device_session_mark_lost(struct agx_macos_device_session *session)
+{
+   uint64_t next_generation;
+
+   if (!agx_macos_device_session_is_open(session))
+      return false;
+
+   /* Change the epoch before disabling admission so every retained object
+    * becomes stale, while its saved connection remains usable for cleanup. */
+   next_generation = session->api_generation + 1;
+   session->api_generation = next_generation != 0 ? next_generation : 1;
+   session->api_configured = false;
+   session->state = AGX_MACOS_DEVICE_SESSION_STATE_LOST;
+   return true;
 }
 
 static kern_return_t
@@ -367,9 +413,7 @@ agx_macos_device_session_configure_traced_api(
    uint32_t enabled = 1;
    kern_return_t result;
 
-   if (!session || !client_path ||
-       session->profile != AGX_MACOS_DEVICE_PROFILE_T6040_G16S_USC3 ||
-       session->device.connection == IO_OBJECT_NULL) {
+   if (!agx_macos_device_session_is_open(session) || !client_path) {
       return kIOReturnBadArgument;
    }
 
@@ -402,5 +446,6 @@ agx_macos_device_session_configure_traced_api(
 
    session->api_configured = true;
    session->api_generation = response.configured;
+   session->state = AGX_MACOS_DEVICE_SESSION_STATE_CONFIGURED;
    return KERN_SUCCESS;
 }

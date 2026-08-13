@@ -33,6 +33,30 @@ struct agx_macos_iosurface_token {
    uint64_t generation;
 };
 
+/* Captures one presentable drawable identity and layout under the winsys
+ * lifecycle lock. Consumers must still revalidate the token after async work
+ * because a later resize makes this snapshot stale. */
+struct agx_macos_iosurface_snapshot {
+   struct agx_macos_iosurface_token token;
+   uint32_t width;
+   uint32_t height;
+   uint32_t bytes_per_row;
+   uint32_t pixel_format;
+};
+
+/* Holds a shareable IOSurface reference for a native winsys consumer. Resize
+ * retains the old memory until release but makes the lease stale, requiring a
+ * consumer to acquire the replacement before it can present or submit. */
+struct agx_macos_iosurface_lease {
+   IOSurfaceRef surface;
+   struct agx_macos_iosurface_token token;
+   uint32_t width;
+   uint32_t height;
+   uint32_t bytes_per_row;
+   uint32_t pixel_format;
+   bool active;
+};
+
 kern_return_t agx_macos_iosurface_create_rgba8(
    uint32_t width, uint32_t height, struct agx_macos_iosurface *out_surface);
 /* Returns the shareable IOSurface identity used by a future presentation or
@@ -49,11 +73,26 @@ bool agx_macos_iosurface_token_is_current(
 bool agx_macos_iosurface_token_can_present(
    const struct agx_macos_iosurface *surface,
    const struct agx_macos_iosurface_token *token);
+bool agx_macos_iosurface_capture_presentable_snapshot(
+   const struct agx_macos_iosurface *surface,
+   struct agx_macos_iosurface_snapshot *out_snapshot);
+kern_return_t agx_macos_iosurface_acquire_lease(
+   const struct agx_macos_iosurface *surface,
+   struct agx_macos_iosurface_lease *out_lease);
+bool agx_macos_iosurface_lease_is_current(
+   const struct agx_macos_iosurface *surface,
+   const struct agx_macos_iosurface_lease *lease);
+void agx_macos_iosurface_release_lease(
+   struct agx_macos_iosurface_lease *lease);
+/* A live CPU map blocks resize and teardown until its owner unmaps it. */
+bool agx_macos_iosurface_is_idle(const struct agx_macos_iosurface *surface);
 /* Replaces an unlocked drawable only after its replacement has been created.
  * This is the resize primitive used before CAMetalLayer presentation exists. */
 kern_return_t agx_macos_iosurface_recreate_rgba8(
    struct agx_macos_iosurface *surface, uint32_t width, uint32_t height);
-void agx_macos_iosurface_destroy(struct agx_macos_iosurface *surface);
+/* Never invalidates a mapped CPU pointer. The caller retries after unmapping
+ * when this returns kIOReturnBusy. */
+kern_return_t agx_macos_iosurface_destroy(struct agx_macos_iosurface *surface);
 kern_return_t agx_macos_iosurface_map_read(
    struct agx_macos_iosurface *surface, const uint8_t **out_bytes,
    uint32_t *out_bytes_per_row);

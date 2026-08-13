@@ -611,13 +611,13 @@ agx_get_in_sync(struct agx_context *ctx)
 }
 
 static void
-agx_add_sync(struct drm_asahi_sync *syncs, unsigned *count, uint32_t handle)
+agx_add_sync(struct agx_submit_sync *syncs, unsigned *count, uint32_t handle)
 {
    if (!handle)
       return;
 
-   syncs[(*count)++] = (struct drm_asahi_sync){
-      .sync_type = DRM_ASAHI_SYNC_SYNCOBJ,
+   syncs[(*count)++] = (struct agx_submit_sync){
+      .type = AGX_SUBMIT_SYNC_BINARY,
       .handle = handle,
    };
 }
@@ -625,7 +625,7 @@ agx_add_sync(struct drm_asahi_sync *syncs, unsigned *count, uint32_t handle)
 #define MAX_ATTACHMENTS 16
 
 struct attachments {
-   struct drm_asahi_attachment list[MAX_ATTACHMENTS];
+   struct agx_submit_attachment list[MAX_ATTACHMENTS];
    size_t count;
 };
 
@@ -634,9 +634,110 @@ asahi_add_attachment(struct attachments *att, struct agx_resource *rsrc)
 {
    assert(att->count < MAX_ATTACHMENTS);
 
-   att->list[att->count++] = (struct drm_asahi_attachment){
-      .size = rsrc->layout.size_B - rsrc->layout.level_offsets_B[0],
-      .pointer = agx_map_gpu(rsrc),
+   att->list[att->count++] = (struct agx_submit_attachment){
+      .size_B = rsrc->layout.size_B - rsrc->layout.level_offsets_B[0],
+      .gpu_va = agx_map_gpu(rsrc),
+   };
+}
+
+static struct agx_submit_helper
+agx_submit_helper_from_drm(const struct drm_asahi_helper_program *helper)
+{
+   return (struct agx_submit_helper){
+      .binary = helper->binary,
+      .config = helper->cfg,
+      .data = helper->data,
+   };
+}
+
+static struct agx_submit_zls_buffer
+agx_submit_zls_buffer_from_drm(const struct drm_asahi_zls_buffer *buffer)
+{
+   return (struct agx_submit_zls_buffer){
+      .base = buffer->base,
+      .compression_base = buffer->comp_base,
+      .stride_B = buffer->stride,
+      .compression_stride_B = buffer->comp_stride,
+   };
+}
+
+static struct agx_submit_timestamps
+agx_submit_timestamps_from_drm(const struct drm_asahi_timestamps *timestamps)
+{
+   return (struct agx_submit_timestamps){
+      .start = {
+         .object = timestamps->start.handle,
+         .offset_B = timestamps->start.offset,
+      },
+      .end = {
+         .object = timestamps->end.handle,
+         .offset_B = timestamps->end.offset,
+      },
+   };
+}
+
+static struct agx_submit_bg_eot
+agx_submit_bg_eot_from_drm(const struct drm_asahi_bg_eot *program)
+{
+   return (struct agx_submit_bg_eot){
+      .usc = program->usc,
+      .resource_specifier = program->rsrc_spec,
+   };
+}
+
+static struct agx_submit_compute
+agx_submit_compute_from_drm(const struct drm_asahi_cmd_compute *compute)
+{
+   return (struct agx_submit_compute){
+      .flags = compute->flags,
+      .sampler_count = compute->sampler_count,
+      .cdm_ctrl_stream_base = compute->cdm_ctrl_stream_base,
+      .cdm_ctrl_stream_end = compute->cdm_ctrl_stream_end,
+      .sampler_heap = compute->sampler_heap,
+      .helper = agx_submit_helper_from_drm(&compute->helper),
+      .timestamps = agx_submit_timestamps_from_drm(&compute->ts),
+   };
+}
+
+static struct agx_submit_render
+agx_submit_render_from_drm(const struct drm_asahi_cmd_render *render,
+                           const struct attachments *attachments)
+{
+   return (struct agx_submit_render){
+      .flags = render->flags,
+      .isp_zls_pixels = render->isp_zls_pixels,
+      .vdm_ctrl_stream_base = render->vdm_ctrl_stream_base,
+      .vertex_helper = agx_submit_helper_from_drm(&render->vertex_helper),
+      .fragment_helper = agx_submit_helper_from_drm(&render->fragment_helper),
+      .isp_scissor_base = render->isp_scissor_base,
+      .isp_dbias_base = render->isp_dbias_base,
+      .isp_oclqry_base = render->isp_oclqry_base,
+      .depth = agx_submit_zls_buffer_from_drm(&render->depth),
+      .stencil = agx_submit_zls_buffer_from_drm(&render->stencil),
+      .zls_ctrl = render->zls_ctrl,
+      .ppp_multisamplectl = render->ppp_multisamplectl,
+      .sampler_heap = render->sampler_heap,
+      .ppp_ctrl = render->ppp_ctrl,
+      .width_px = render->width_px,
+      .height_px = render->height_px,
+      .layers = render->layers,
+      .sampler_count = render->sampler_count,
+      .utile_width_px = render->utile_width_px,
+      .utile_height_px = render->utile_height_px,
+      .samples = render->samples,
+      .sample_size_B = render->sample_size_B,
+      .isp_merge_upper_x = render->isp_merge_upper_x,
+      .isp_merge_upper_y = render->isp_merge_upper_y,
+      .bg = agx_submit_bg_eot_from_drm(&render->bg),
+      .eot = agx_submit_bg_eot_from_drm(&render->eot),
+      .partial_bg = agx_submit_bg_eot_from_drm(&render->partial_bg),
+      .partial_eot = agx_submit_bg_eot_from_drm(&render->partial_eot),
+      .isp_bgobjdepth = render->isp_bgobjdepth,
+      .isp_bgobjvals = render->isp_bgobjvals,
+      .ts_vtx = agx_submit_timestamps_from_drm(&render->ts_vtx),
+      .ts_frag = agx_submit_timestamps_from_drm(&render->ts_frag),
+      .attachments = attachments->list,
+      .attachment_count = attachments->count,
    };
 }
 
@@ -651,12 +752,15 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
    /* We allocate the worst-case sync array size since this won't be excessive
     * for most workloads
     */
-   unsigned max_syncs = batch->bo_list.bit_count + 2;
+   /* At most one implicit input fence per BO plus explicit/timeline inputs,
+    * followed by the binary batch and timeline output fences. */
+   unsigned max_syncs = batch->bo_list.bit_count + 4;
    unsigned in_sync_count = 0;
    unsigned shared_bo_count = 0;
-   struct drm_asahi_sync *syncs =
-      malloc((max_syncs * sizeof(struct drm_asahi_sync)) + 2);
+   struct agx_submit_sync *syncs =
+      calloc(max_syncs, sizeof(struct agx_submit_sync));
    struct agx_bo **shared_bos = malloc(max_syncs * sizeof(struct agx_bo *));
+   struct agx_submit_resource *resources;
 
    uint64_t wait_seqid = p_atomic_read(&screen->flush_wait_seqid);
 
@@ -776,8 +880,8 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
    if (wait_seqid) {
       batch_debug(batch, "Waits on inter-context sync point %" PRIu64,
                   wait_seqid);
-      syncs[in_sync_count++] = (struct drm_asahi_sync){
-         .sync_type = DRM_ASAHI_SYNC_TIMELINE_SYNCOBJ,
+      syncs[in_sync_count++] = (struct agx_submit_sync){
+         .type = AGX_SUBMIT_SYNC_TIMELINE,
          .handle = screen->flush_syncobj,
          .timeline_value = wait_seqid,
       };
@@ -802,92 +906,134 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
     * Everything still works (but over-synchronizes because this effectively
     * serializes all submissions once any context flushes once).
     */
-   struct drm_asahi_sync *out_syncs = syncs + in_sync_count;
+   struct agx_submit_sync *out_syncs = syncs + in_sync_count;
 
-   out_syncs[0] = (struct drm_asahi_sync){
-      .sync_type = DRM_ASAHI_SYNC_SYNCOBJ,
+   out_syncs[0] = (struct agx_submit_sync){
+      .type = AGX_SUBMIT_SYNC_BINARY,
       .handle = batch->syncobj,
    };
 
-   out_syncs[1] = (struct drm_asahi_sync){
-      .sync_type = DRM_ASAHI_SYNC_TIMELINE_SYNCOBJ,
+   out_syncs[1] = (struct agx_submit_sync){
+      .type = AGX_SUBMIT_SYNC_TIMELINE,
       .handle = screen->flush_syncobj,
       .timeline_value = seqid,
    };
 
-   /* Submit! */
-   struct util_dynarray cmdbuf = UTIL_DYNARRAY_INIT;
+   /* Finalize one platform-neutral submit description. Linux serializes it at
+    * the DRM boundary; a future macOS transport consumes the same data. */
+   struct agx_submit_command commands[2] = {0};
+   struct agx_submit_encoder encoders[2] = {0};
+   struct agx_submit_object objects[1] = {0};
+   struct attachments attachments = {.count = 0};
+   uint32_t command_count = 0;
+   uint32_t object_count = 0;
+   uint32_t resource_count = 0;
+
+   if (batch->timestamps.size > 0) {
+      agx_batch_add_bo(batch, ctx->timestamps);
+      objects[object_count++] = (struct agx_submit_object){
+         .type = AGX_SUBMIT_OBJECT_TIMESTAMPS,
+         .handle = ctx->timestamp_handle,
+         .bo = ctx->timestamps,
+      };
+   }
 
    if (compute) {
-      /* Barrier on previous submission */
-      struct drm_asahi_cmd_header header = agx_cmd_header(true, 0, 0);
+      uint64_t stream_size =
+         compute->cdm_ctrl_stream_end - compute->cdm_ctrl_stream_base;
 
-      util_dynarray_append(&cmdbuf, header);
-      util_dynarray_append(&cmdbuf, *compute);
+      commands[command_count++] = (struct agx_submit_command){
+         .type = AGX_SUBMIT_COMMAND_COMPUTE,
+         .vdm_barrier = 0,
+         .cdm_barrier = 0,
+         .compute = agx_submit_compute_from_drm(compute),
+      };
+      encoders[command_count - 1] = (struct agx_submit_encoder){
+         .type = AGX_SUBMIT_ENCODER_COMPUTE,
+         .bo = batch->cdm.bo,
+         .gpu_va = compute->cdm_ctrl_stream_base,
+         .size_B = stream_size,
+      };
    }
 
    if (render) {
-      struct attachments att = {.count = 0};
       struct pipe_framebuffer_state *fb = &batch->key;
 
       for (unsigned i = 0; i < fb->nr_cbufs; ++i) {
          if (fb->cbufs[i].texture)
-            asahi_add_attachment(&att, agx_resource(fb->cbufs[i].texture));
+            asahi_add_attachment(&attachments,
+                                 agx_resource(fb->cbufs[i].texture));
       }
 
       if (fb->zsbuf.texture) {
          struct agx_resource *rsrc = agx_resource(fb->zsbuf.texture);
-         asahi_add_attachment(&att, rsrc);
+         asahi_add_attachment(&attachments, rsrc);
 
          if (rsrc->separate_stencil)
-            asahi_add_attachment(&att, rsrc->separate_stencil);
+            asahi_add_attachment(&attachments, rsrc->separate_stencil);
       }
 
-      if (att.count) {
-         struct drm_asahi_cmd_header header = {
-            .cmd_type = DRM_ASAHI_SET_FRAGMENT_ATTACHMENTS,
-            .size = sizeof(att.list[0]) * att.count,
-            .cdm_barrier = DRM_ASAHI_BARRIER_NONE,
-            .vdm_barrier = DRM_ASAHI_BARRIER_NONE,
-         };
-
-         util_dynarray_append(&cmdbuf, header);
-         util_dynarray_append_array(&cmdbuf, struct drm_asahi_attachment,
-                                    att.list, att.count);
-      }
-
-      /* Barrier on previous submission */
-      struct drm_asahi_cmd_header header = agx_cmd_header(
-         false, compute ? DRM_ASAHI_BARRIER_NONE : 0, compute ? 1 : 0);
-
-      util_dynarray_append(&cmdbuf, header);
-      util_dynarray_append(&cmdbuf, *render);
+      commands[command_count++] = (struct agx_submit_command){
+         .type = AGX_SUBMIT_COMMAND_RENDER,
+         .vdm_barrier = compute ? AGX_SUBMIT_BARRIER_NONE : 0,
+         .cdm_barrier = compute ? 1 : 0,
+         .render = agx_submit_render_from_drm(render, &attachments),
+      };
+      encoders[command_count - 1] = (struct agx_submit_encoder){
+         .type = AGX_SUBMIT_ENCODER_RENDER,
+         .bo = batch->vdm.bo,
+         .gpu_va = render->vdm_ctrl_stream_base,
+      };
    }
 
-   struct drm_asahi_submit submit = {
-      .flags = 0,
+   /* The BO list already contains every encoder, shader, heap, attachment,
+    * and user resource used by the finalized batch. Preserve it as the
+    * transport-neutral residency table. */
+   resources = calloc(batch->bo_list.bit_count, sizeof(*resources));
+   assert(resources || batch->bo_list.bit_count == 0);
+   int resource_handle;
+   AGX_BATCH_FOREACH_BO_HANDLE(batch, resource_handle) {
+      struct agx_bo *bo = agx_lookup_bo(dev, resource_handle);
+
+      assert(bo && bo->va && bo->va->addr && bo->size);
+      assert(resource_count < batch->bo_list.bit_count);
+      resources[resource_count++] = (struct agx_submit_resource){
+         .bo = bo,
+         .gpu_va = bo->va->addr,
+         .size_B = bo->size,
+      };
+   }
+
+   struct agx_submit_info submit_info = {
       .queue_id = ctx->queue_id,
+      .syncs = syncs,
       .in_sync_count = in_sync_count,
       .out_sync_count = 2,
-      .syncs = (uint64_t)(uintptr_t)(syncs),
-      .cmdbuf = (uint64_t)(uintptr_t)(cmdbuf.data),
-      .cmdbuf_size = cmdbuf.size,
+      .commands = commands,
+      .command_count = command_count,
+      .encoders = encoders,
+      .encoder_count = command_count,
+      .objects = objects,
+      .object_count = object_count,
+      .resources = resources,
+      .resource_count = resource_count,
    };
-
-   int ret = dev->ops.submit(dev, &submit, &virt);
+   int ret = dev->ops.submit_info
+                ? dev->ops.submit_info(dev, &submit_info, &virt)
+                : agx_submit_info_submit_linux(dev, &submit_info, &virt);
 
    u_rwlock_rdunlock(&screen->destroy_lock);
 
    if (ret) {
       if (compute) {
-         fprintf(stderr, "DRM_IOCTL_ASAHI_SUBMIT compute failed: %m\n");
+         fprintf(stderr, "AGX compute submission failed: %m\n");
       }
 
       if (render) {
          struct drm_asahi_cmd_render *c = render;
          fprintf(
             stderr,
-            "DRM_IOCTL_ASAHI_SUBMIT render failed: %m (%dx%d tile %dx%d layers %d samples %d)\n",
+            "AGX render submission failed: %m (%dx%d tile %dx%d layers %d samples %d)\n",
             c->width_px, c->height_px, c->utile_width_px, c->utile_height_px,
             c->layers, c->samples);
       }
@@ -944,13 +1090,18 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
       batch_debug(batch, "Writes to BO @ 0x%" PRIx64, bo->va->addr);
    }
 
-   free(syncs);
    free(shared_bos);
 
    if (dev->debug & (AGX_DBG_TRACE | AGX_DBG_SYNC | AGX_DBG_SCRATCH)) {
       if (dev->debug & AGX_DBG_TRACE) {
-         agxdecode_drm_cmdbuf(dev->agxdecode, &dev->params, &cmdbuf, true);
+         struct util_dynarray trace_cmdbuf = UTIL_DYNARRAY_INIT;
+
+         assert(agx_submit_info_encode_drm_commands(&submit_info,
+                                                     &trace_cmdbuf));
+         agxdecode_drm_cmdbuf(dev->agxdecode, &dev->params, &trace_cmdbuf,
+                              true);
          agxdecode_next_frame();
+         util_dynarray_fini(&trace_cmdbuf);
       }
 
       /* Wait so we can get errors reported back */
@@ -973,7 +1124,10 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
       }
    }
 
-   util_dynarray_fini(&cmdbuf);
+   /* submit_info remains valid through the optional trace decode above. */
+   free(resources);
+   free(syncs);
+
    agx_batch_mark_submitted(batch);
 
    free(virt.extres);

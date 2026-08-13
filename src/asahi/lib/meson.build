@@ -17,6 +17,7 @@ libasahi_lib_files = files(
   'agx_nir_prolog_epilog.c',
   'agx_ppp.h',
   'agx_scratch.c',
+  'agx_submit.c',
   'agx_va.c',
   'pool.c',
 )
@@ -87,12 +88,16 @@ libasahi_lib = static_library(
 if dep_iokit.found() and dep_corefoundation.found() and host_machine.system() == 'darwin'
   libasahi_macos_winsys = static_library(
     'asahi_macos_winsys',
-    files('agx_macos_device.c', 'agx_macos_bo.c', 'agx_macos_queue.c',
+    files('agx_macos_device.c', 'agx_macos_uabi.c', 'agx_macos_bo.c',
+          'agx_macos_shader_provenance.c', 'agx_macos_queue.c',
           'agx_macos_command.c', 'agx_macos_submission_observation.c',
-          'agx_macos_submission_lease.c', 'agx_macos_iosurface.m',
+          'agx_macos_submission_build.c', 'agx_macos_mesa_device.c',
+          'agx_macos_submission_lease.c',
+          'agx_macos_iosurface.m',
           'agx_macos_screen_bootstrap.c'),
-    include_directories : [inc_src, inc_asahi],
-    dependencies : [dep_iokit, dep_corefoundation,
+    include_directories : [inc_src, inc_include, inc_asahi, inc_virtio_gpu,
+                           inc_virtio_vdrm, include_directories('../libagx')],
+    dependencies : [dep_iokit, dep_corefoundation, idep_nir_headers,
                     dependency('appleframeworks', modules : ['Foundation', 'IOSurface'])],
     gnu_symbol_visibility : 'hidden',
     build_by_default : false,
@@ -101,6 +106,24 @@ if dep_iokit.found() and dep_corefoundation.found() and host_machine.system() ==
   executable(
     'asahi_macos_winsys_probe',
     'tests/agx_macos_device_test.c',
+    include_directories : [inc_src, inc_asahi],
+    dependencies : [dep_iokit, dep_corefoundation],
+    link_with : libasahi_macos_winsys,
+    build_by_default : false,
+  )
+
+  executable(
+    'asahi_macos_uabi_contract_smoke',
+    'tests/agx_macos_uabi_contract_smoke.c',
+    include_directories : [inc_src, inc_asahi],
+    dependencies : [dep_iokit, dep_corefoundation],
+    link_with : libasahi_macos_winsys,
+    build_by_default : false,
+  )
+
+  executable(
+    'asahi_macos_device_session_state_smoke',
+    'tests/agx_macos_device_session_state_smoke.c',
     include_directories : [inc_src, inc_asahi],
     dependencies : [dep_iokit, dep_corefoundation],
     link_with : libasahi_macos_winsys,
@@ -153,6 +176,44 @@ if dep_iokit.found() and dep_corefoundation.found() and host_machine.system() ==
   )
 
   executable(
+    'asahi_macos_submission_build_smoke',
+    'tests/agx_macos_submission_build_smoke.c',
+    include_directories : [inc_src, inc_asahi],
+    dependencies : [dep_iokit, dep_corefoundation],
+    link_with : libasahi_macos_winsys,
+    build_by_default : false,
+  )
+
+  executable(
+    'asahi_macos_mesa_device_smoke',
+    'tests/agx_macos_mesa_device_smoke.c',
+    include_directories : [inc_src, inc_include, inc_asahi, inc_virtio_gpu,
+                           inc_virtio_vdrm, include_directories('../libagx')],
+    dependencies : [dep_iokit, dep_corefoundation],
+    link_with : [libasahi_macos_winsys, libasahi_lib],
+    build_by_default : false,
+  )
+
+  executable(
+    'asahi_macos_shader_provenance_smoke',
+    'tests/agx_macos_shader_provenance_smoke.c',
+    include_directories : [inc_src, inc_include, inc_asahi,
+                           include_directories('../libagx')],
+    dependencies : [dep_iokit, dep_corefoundation],
+    link_with : libasahi_macos_winsys,
+    build_by_default : false,
+  )
+
+  executable(
+    'agx_submit_info_smoke',
+    'tests/agx_submit_info_smoke.c',
+    include_directories : [inc_src, inc_include, inc_asahi, inc_virtio_gpu,
+                           inc_virtio_vdrm, include_directories('../libagx')],
+    link_with : libasahi_lib,
+    build_by_default : false,
+  )
+
+  executable(
     'asahi_macos_submission_lease_smoke',
     'tests/agx_macos_submission_lease_smoke.c',
     include_directories : [inc_src, inc_asahi],
@@ -190,6 +251,24 @@ if dep_iokit.found() and dep_corefoundation.found() and host_machine.system() ==
   )
 
   executable(
+    'asahi_macos_shader_allocation_trace',
+    'tests/agx_macos_shader_allocation_trace.m',
+    include_directories : [inc_src, inc_asahi],
+    dependencies : dependency('appleframeworks', modules : ['Metal', 'Foundation']),
+    link_with : libasahi_macos_winsys,
+    build_by_default : false,
+  )
+
+  executable(
+    'asahi_macos_shader_execution_trace',
+    'tests/agx_macos_shader_execution_trace.m',
+    include_directories : [inc_src, inc_asahi],
+    dependencies : dependency('appleframeworks', modules : ['Metal', 'Foundation']),
+    link_with : libasahi_macos_winsys,
+    build_by_default : false,
+  )
+
+  executable(
     'asahi_macos_resource_record_variation_trace',
     'tests/agx_macos_resource_record_variation_trace.m',
     include_directories : [inc_src, inc_asahi],
@@ -210,6 +289,15 @@ if dep_iokit.found() and dep_corefoundation.found() and host_machine.system() ==
   executable(
     'asahi_macos_compute_resource_record_trace',
     'tests/agx_macos_compute_resource_record_trace.m',
+    include_directories : [inc_src, inc_asahi],
+    dependencies : dependency('appleframeworks', modules : ['Metal', 'Foundation']),
+    link_with : libasahi_macos_winsys,
+    build_by_default : false,
+  )
+
+  executable(
+    'asahi_macos_public_buffer_binding_trace',
+    'tests/agx_macos_public_buffer_binding_trace.m',
     include_directories : [inc_src, inc_asahi],
     dependencies : dependency('appleframeworks', modules : ['Metal', 'Foundation']),
     link_with : libasahi_macos_winsys,
@@ -311,6 +399,19 @@ if dep_iokit.found() and dep_corefoundation.found() and host_machine.system() ==
 endif
 
 if with_tests
+  test(
+    'asahi_submit_info_smoke',
+    executable(
+      'asahi_submit_info_smoke',
+      'tests/agx_submit_info_smoke.c',
+      c_args : [c_msvc_compat_args, no_override_init_args],
+      gnu_symbol_visibility : 'hidden',
+      dependencies: [idep_mesautil],
+      link_with : libasahi_lib,
+    ),
+    suite : ['asahi'],
+  )
+
   test(
     'libasahi_tests',
     executable(

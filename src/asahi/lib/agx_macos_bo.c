@@ -62,6 +62,15 @@ static const struct agx_macos_allocate_shared_64k_request
 
 static kern_return_t agx_macos_bo_destroy_direct(struct agx_macos_bo *bo);
 
+static bool
+agx_macos_bo_is_current(const struct agx_macos_device_session *session,
+                        const struct agx_macos_bo *bo)
+{
+   return agx_macos_device_session_is_current(session) && bo &&
+          bo->connection == session->device.connection &&
+          bo->api_generation == session->api_generation;
+}
+
 static uint16_t
 agx_macos_bo_shared_size_units(uint64_t size)
 {
@@ -143,9 +152,8 @@ agx_macos_bo_create(const struct agx_macos_device_session *session,
    uint16_t size_units = agx_macos_bo_shared_size_units(size);
    kern_return_t result;
 
-   if (!session || !bo || bo->connection != IO_OBJECT_NULL ||
-       session->profile != AGX_MACOS_DEVICE_PROFILE_T6040_G16S_USC3 ||
-       session->device.connection == IO_OBJECT_NULL ||
+   if (!agx_macos_device_session_is_current(session) || !bo ||
+       bo->connection != IO_OBJECT_NULL ||
        !agx_macos_bo_storage_supports_size(storage, size)) {
       return kIOReturnBadArgument;
    }
@@ -183,6 +191,7 @@ agx_macos_bo_create(const struct agx_macos_device_session *session,
       .cpu = (void *)(uintptr_t)response.cpu,
       .size = response.sub_size,
       .handle = response.handle,
+      .api_generation = session->api_generation,
       .storage = storage,
    };
    return KERN_SUCCESS;
@@ -243,25 +252,49 @@ agx_macos_bo_set_conflicts(const struct agx_macos_bo_set *set,
    return false;
 }
 
+static bool
+agx_macos_bo_set_has_identity_conflict(const struct agx_macos_bo_set *set,
+                                       const struct agx_macos_bo *bo)
+{
+   for (unsigned i = 0; i < AGX_MACOS_BO_SET_CAPACITY; ++i) {
+      const struct agx_macos_bo *entry = &set->entries[i];
+
+      if (entry->connection != IO_OBJECT_NULL &&
+          (entry->handle == bo->handle || entry->gpu_va == bo->gpu_va)) {
+         return true;
+      }
+   }
+
+   return false;
+}
+
 kern_return_t
 agx_macos_bo_set_init(struct agx_macos_bo_set *set,
                       const struct agx_macos_device_session *session)
 {
-   if (!set || !session ||
-       session->profile != AGX_MACOS_DEVICE_PROFILE_T6040_G16S_USC3 ||
-       session->device.connection == IO_OBJECT_NULL) {
+   if (!set || !agx_macos_device_session_is_current(session)) {
       return kIOReturnBadArgument;
    }
 
    *set = (struct agx_macos_bo_set){
       .session = session,
       .next_mapping_token = 1,
+      .api_generation = session->api_generation,
    };
    if (pthread_mutex_init(&set->lock, NULL) != 0)
       return kIOReturnNoResources;
 
    set->initialized = true;
    return KERN_SUCCESS;
+}
+
+bool
+agx_macos_bo_set_is_current(const struct agx_macos_bo_set *set,
+                            const struct agx_macos_device_session *session)
+{
+   return set && agx_macos_device_session_is_current(session) &&
+          set->initialized && set->session == session &&
+          set->api_generation == session->api_generation;
 }
 
 kern_return_t
@@ -274,7 +307,8 @@ agx_macos_bo_set_create_at_least(struct agx_macos_bo_set *set,
    unsigned free_index = AGX_MACOS_BO_SET_CAPACITY;
    kern_return_t result;
 
-   if (!set || !bo || !set->initialized || bo->connection != IO_OBJECT_NULL)
+   if (!set || !bo || !agx_macos_bo_set_is_current(set, set->session) ||
+       bo->connection != IO_OBJECT_NULL)
       return kIOReturnBadArgument;
 
    pthread_mutex_lock(&set->lock);
@@ -293,7 +327,12 @@ agx_macos_bo_set_create_at_least(struct agx_macos_bo_set *set,
    result = agx_macos_bo_create_at_least(set->session, storage, minimum_size,
                                          alignment, &allocated);
    if (result == KERN_SUCCESS && agx_macos_bo_set_conflicts(set, &allocated)) {
-      (void)agx_macos_bo_destroy(&allocated);
+      /* A repeated raw selector-9 call may report the identity of an existing
+       * allocation. Never free that ambiguous reply: doing so could release a
+       * live BO already tracked by this set. A distinct overlapping reply can
+       * be safely retired, but identity reuse stays fail-closed. */
+      if (!agx_macos_bo_set_has_identity_conflict(set, &allocated))
+         (void)agx_macos_bo_destroy(&allocated);
       result = kIOReturnBadArgument;
    }
 
@@ -313,7 +352,8 @@ agx_macos_bo_set_lookup_handle(struct agx_macos_bo_set *set,
 {
    kern_return_t result = kIOReturnNotFound;
 
-   if (!set || !bo || !set->initialized || handle == 0)
+   if (!set || !bo || handle == 0 ||
+       !agx_macos_bo_set_is_current(set, set->session))
       return kIOReturnBadArgument;
 
    pthread_mutex_lock(&set->lock);
@@ -336,7 +376,7 @@ agx_macos_bo_set_lookup_gpu_va(struct agx_macos_bo_set *set,
 {
    kern_return_t result = kIOReturnNotFound;
 
-   if (!set || !bo || !set->initialized)
+   if (!set || !bo || !agx_macos_bo_set_is_current(set, set->session))
       return kIOReturnBadArgument;
 
    pthread_mutex_lock(&set->lock);
@@ -361,7 +401,8 @@ agx_macos_bo_set_lookup_gpu_va_range(struct agx_macos_bo_set *set,
 {
    kern_return_t result = kIOReturnNotFound;
 
-   if (!set || !bo || !set->initialized || size == 0 ||
+   if (!set || !bo || size == 0 ||
+       !agx_macos_bo_set_is_current(set, set->session) ||
        gpu_va > UINT64_MAX - size) {
       return kIOReturnBadArgument;
    }
@@ -443,7 +484,8 @@ agx_macos_bo_set_retain_submission(struct agx_macos_bo_set *set,
    struct agx_macos_bo *entry;
    kern_return_t result = kIOReturnNotFound;
 
-   if (!set || !set->initialized || handle == 0)
+   if (!set || handle == 0 ||
+       !agx_macos_bo_set_is_current(set, set->session))
       return kIOReturnBadArgument;
 
    pthread_mutex_lock(&set->lock);
@@ -467,7 +509,8 @@ agx_macos_bo_set_retain_submission_range(struct agx_macos_bo_set *set,
    struct agx_macos_bo *match = NULL;
    kern_return_t result = kIOReturnNotFound;
 
-   if (!set || !set->initialized || size == 0 ||
+   if (!set || size == 0 ||
+       !agx_macos_bo_set_is_current(set, set->session) ||
        gpu_va > UINT64_MAX - size) {
       return kIOReturnBadArgument;
    }
@@ -573,8 +616,8 @@ agx_macos_bo_set_map_range(struct agx_macos_bo_set *set, uint32_t handle,
    struct agx_macos_bo_mapping_lease *mapping;
    kern_return_t result = kIOReturnNotFound;
 
-   if (!set || !set->initialized || !out_mapping || out_mapping->active ||
-       handle == 0 || size == 0) {
+   if (!set || !out_mapping || out_mapping->active || handle == 0 ||
+       size == 0 || !agx_macos_bo_set_is_current(set, set->session)) {
       return kIOReturnBadArgument;
    }
 
@@ -712,14 +755,15 @@ agx_macos_bo_set_cleanup(struct agx_macos_bo_set *set)
 }
 
 kern_return_t
-agx_macos_bo_map(struct agx_macos_bo *bo, uint64_t offset, uint64_t size,
+agx_macos_bo_map(const struct agx_macos_device_session *session,
+                 struct agx_macos_bo *bo, uint64_t offset, uint64_t size,
                  void **cpu)
 {
    if (!cpu)
       return kIOReturnBadArgument;
 
    *cpu = NULL;
-   if (!bo || bo->connection == IO_OBJECT_NULL ||
+   if (!agx_macos_bo_is_current(session, bo) ||
        bo->storage == AGX_MACOS_BO_STORAGE_PRIVATE || !bo->cpu || size == 0 ||
        offset > bo->size || size > bo->size - offset) {
       return kIOReturnBadArgument;

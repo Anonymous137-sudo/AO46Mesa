@@ -57,23 +57,21 @@ agx_sync_fd_to_handle(struct agx_device *dev, int fd, uint32_t *handle)
    return drmSyncobjFDToHandle(dev->fd, fd, handle);
 }
 #else
-/* macOS AGX completion records are observed but not decoded yet. Returning
- * ENOTSUP keeps the native driver from treating a CPU event as GPU completion. */
+/* macOS uses the native queue/token registry instead of DRM syncobjs. It
+ * remains unavailable until the direct device owns a current notification
+ * queue and an Apple-accepted package is attached to the handle. */
+#include "asahi/lib/agx_macos_mesa_device.h"
+
 int
 agx_sync_create(struct agx_device *dev, uint32_t flags, uint32_t *handle)
 {
-   (void)dev;
-   (void)flags;
-   (void)handle;
-   return -ENOTSUP;
+   return agx_macos_mesa_sync_create(dev, flags, handle);
 }
 
 int
 agx_sync_destroy(struct agx_device *dev, uint32_t handle)
 {
-   (void)dev;
-   (void)handle;
-   return -ENOTSUP;
+   return agx_macos_mesa_sync_destroy(dev, handle);
 }
 
 int
@@ -81,13 +79,8 @@ agx_sync_wait(struct agx_device *dev, const uint32_t *handles,
               uint32_t handle_count, uint64_t timeout, uint32_t flags,
               uint32_t *first_signaled)
 {
-   (void)dev;
-   (void)handles;
-   (void)handle_count;
-   (void)timeout;
-   (void)flags;
-   (void)first_signaled;
-   return -ENOTSUP;
+   return agx_macos_mesa_sync_wait(dev, handles, handle_count, timeout, flags,
+                                   first_signaled);
 }
 
 int

@@ -32,6 +32,7 @@ struct agx_macos_bo {
    void *cpu;
    uint64_t size;
    uint32_t handle;
+   uint64_t api_generation;
    enum agx_macos_bo_storage storage;
    uint32_t in_flight_count;
    uint32_t cpu_map_count;
@@ -66,10 +67,12 @@ struct agx_macos_bo_set {
    struct agx_macos_bo_mapping_lease
       mappings[AGX_MACOS_BO_MAPPING_CAPACITY];
    uint64_t next_mapping_token;
+   uint64_t api_generation;
    bool initialized;
 };
 
-/* Creates only a trace-validated direct allocation contract. */
+/* Creates only a trace-validated direct allocation contract for the active
+ * traced API generation. */
 kern_return_t agx_macos_bo_create(const struct agx_macos_device_session *session,
                                   enum agx_macos_bo_storage storage,
                                   uint64_t size, struct agx_macos_bo *bo);
@@ -82,6 +85,13 @@ kern_return_t agx_macos_bo_create_at_least(
 
 kern_return_t agx_macos_bo_set_init(
    struct agx_macos_bo_set *set,
+   const struct agx_macos_device_session *session);
+/* BOs are allocated against one traced API generation. Creation, lookup,
+ * submission pinning, and CPU mapping must reject a reconfigured or closed
+ * session; release, unmap, and cleanup remain available for loss handling
+ * after that generation is no longer current. */
+bool agx_macos_bo_set_is_current(
+   const struct agx_macos_bo_set *set,
    const struct agx_macos_device_session *session);
 kern_return_t agx_macos_bo_set_create_at_least(
    struct agx_macos_bo_set *set, enum agx_macos_bo_storage storage,
@@ -137,8 +147,11 @@ agx_macos_bo_create_shared_64k(const struct agx_macos_device_session *session,
    return agx_macos_bo_create_shared(session, AGX_MACOS_BO_SHARED_64K_SIZE, bo);
 }
 
-/* Direct mappings last for the BO lifetime; private BOs cannot be mapped. */
-kern_return_t agx_macos_bo_map(struct agx_macos_bo *bo, uint64_t offset,
+/* Direct mappings last for the BO lifetime; private BOs cannot be mapped.
+ * Mapping requires the same configured session generation that allocated the
+ * BO, while destruction is kept available for device-loss cleanup. */
+kern_return_t agx_macos_bo_map(const struct agx_macos_device_session *session,
+                               struct agx_macos_bo *bo, uint64_t offset,
                                uint64_t size, void **cpu);
 /* Only standalone BOs may use this release path. BO-set members must go
  * through agx_macos_bo_set_destroy so in-flight ownership is checked. */

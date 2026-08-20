@@ -14,6 +14,23 @@ struct nir_to_msl_options {
    void *mem_ctx;
    uint64_t disabled_workarounds;
 
+   /*
+    * Emit immutable static NIR sampler indices as public MSL sampler
+    * arguments instead of entries in the backend-specific sampler table.
+    */
+   bool use_static_sampler_bindings;
+
+   /* Immutable nonzero NIR UBO bindings emitted as public MSL buffers. */
+   uint16_t static_ubo_mask;
+   uint8_t static_ubo_first_buffer;
+
+   /*
+    * Immutable raw NIR buffer-pointer bindings. These retain their binding
+    * number so callers can map a PIPE_BUFFER directly to the corresponding
+    * MTLBuffer without a descriptor-table indirection.
+    */
+   uint16_t static_buffer_mask;
+
    /* Required to correctly declare fragment outputs. Shader may contain
     * shrinked writes which can lead to writting less components than the ones
     * the render target has. This leads to an incorrect calculation of the

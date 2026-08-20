@@ -15,6 +15,10 @@
 mtl_argument_table_descriptor *mtl_new_argument_table_descriptor(void);
 void mtl_set_max_buffer_binding_count(mtl_argument_table_descriptor *descriptor,
                                       uint32_t count);
+void mtl_set_max_texture_binding_count(mtl_argument_table_descriptor *descriptor,
+                                       uint32_t count);
+void mtl_set_max_sampler_binding_count(mtl_argument_table_descriptor *descriptor,
+                                       uint32_t count);
 
 /* MTLArgumentTable */
 mtl_argument_table *
@@ -22,5 +26,9 @@ mtl_new_argument_table(mtl_device *dev,
                        mtl_argument_table_descriptor *descriptor);
 void mtl_set_address(mtl_argument_table *table, uint64_t address,
                      uint32_t binding);
+void mtl_set_texture(mtl_argument_table *table, uint64_t resource_id,
+                     uint32_t binding);
+void mtl_set_sampler_state(mtl_argument_table *table, uint64_t resource_id,
+                           uint32_t binding);
 
 #endif /* KK_ARGUMENT_TABLE_H */

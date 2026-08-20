@@ -205,9 +205,48 @@ mtl_render_pipeline_descriptor_set_max_vertex_amplification_count(mtl_render_pip
    }
 }
 
+void
+mtl_render_pipeline_descriptor_set_vertex_attribute(
+   mtl_render_pipeline_descriptor *descriptor, uint32_t attribute_index,
+   enum mtl_vertex_format format, uint32_t offset, uint32_t buffer_index)
+{
+   @autoreleasepool {
+      MTL4RenderPipelineDescriptor *desc = (MTL4RenderPipelineDescriptor *)descriptor;
+      MTLVertexDescriptor *vertex = desc.vertexDescriptor;
+
+      if (vertex == nil)
+         vertex = [MTLVertexDescriptor vertexDescriptor];
+      vertex.attributes[attribute_index].format = (MTLVertexFormat)format;
+      vertex.attributes[attribute_index].offset = offset;
+      vertex.attributes[attribute_index].bufferIndex = buffer_index;
+      desc.vertexDescriptor = vertex;
+   }
+}
+
+void
+mtl_render_pipeline_descriptor_set_vertex_buffer_layout(
+   mtl_render_pipeline_descriptor *descriptor, uint32_t buffer_index,
+   uint32_t stride, enum mtl_vertex_step_function step_function,
+   uint32_t step_rate)
+{
+   @autoreleasepool {
+      MTL4RenderPipelineDescriptor *desc = (MTL4RenderPipelineDescriptor *)descriptor;
+      MTLVertexDescriptor *vertex = desc.vertexDescriptor;
+
+      if (vertex == nil)
+         vertex = [MTLVertexDescriptor vertexDescriptor];
+      vertex.layouts[buffer_index].stride = stride;
+      vertex.layouts[buffer_index].stepFunction =
+         (MTLVertexStepFunction)step_function;
+      vertex.layouts[buffer_index].stepRate = step_rate;
+      desc.vertexDescriptor = vertex;
+   }
+}
+
 /* Render pipeline */
 mtl_render_pipeline_state *
-mtl_new_render_pipeline(mtl_compiler *compiler, mtl_render_pass_descriptor *descriptor)
+mtl_new_render_pipeline(mtl_compiler *compiler,
+                        mtl_render_pipeline_descriptor *descriptor)
 {
    @autoreleasepool {
       id<MTL4Compiler> comp = (id<MTL4Compiler>)compiler;

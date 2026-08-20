@@ -85,13 +85,27 @@ option(
   value : ['auto'],
   choices : [
     'all', 'auto',
-    'asahi', 'crocus', 'd3d12', 'ethosu', 'etnaviv', 'freedreno', 'i915', 'iris',
+    'ao46mtl', 'asahi', 'crocus', 'd3d12', 'ethosu', 'etnaviv', 'freedreno', 'i915', 'iris',
     'lima', 'llvmpipe', 'nouveau', 'panfrost', 'r300', 'r600', 'radeonsi',
     'rocket', 'softpipe', 'svga', 'tegra', 'v3d', 'vc4', 'virgl', 'zink',
   ],
   description : 'List of gallium drivers to build. If this is set to auto ' +
                 'all drivers applicable to the target OS/architecture ' +
                 'will be built.'
+)
+
+option(
+  'ao46mtl-backend-path',
+  type : 'string',
+  value : '',
+  description : 'Directory containing libAO46MesaMetalBackend.dylib for the ao46mtl Gallium target'
+)
+
+option(
+  'ao46mtl-include-path',
+  type : 'string',
+  value : '',
+  description : 'Directory containing AO46MesaMetalBackend.h for the ao46mtl Gallium target'
 )
 
 option(

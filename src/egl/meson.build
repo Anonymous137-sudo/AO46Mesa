@@ -6,8 +6,11 @@ inc_egl = include_directories('.', 'main')
 c_args_for_egl = [asan_c_args]
 cpp_args_for_egl = []
 link_args_for_egl = []
+build_rpath_for_egl = ''
+install_rpath_for_egl = ''
 link_deps_for_egl = []
 link_for_egl = []
+link_whole_for_egl = []
 if with_dri
   link_for_egl += libgallium_dri
 endif
@@ -149,6 +152,29 @@ elif with_platform_haiku
 
   link_for_egl += [libmesa, libgallium, libswhgl, libsthgl, libglapi]
   deps_for_egl += [cpp.find_library('be'), driver_swrast]
+elif with_gallium_ao46mtl
+  # AO46 has no DRI, GLX, CGL, or NSOpenGL dependency. Its libGL symbols are
+  # linked into libEGL so the ABI aliases share one glapi TLS dispatch state.
+  c_args_for_egl += [
+    '-D_EGL_BUILT_IN_DRIVER_AO46MTL',
+  ]
+  files_egl += files('drivers/ao46mtl/egl_ao46mtl.c')
+
+  incs_for_egl += [inc_gallium, inc_gallium_aux, inc_mesa]
+  incs_for_egl += [include_directories('../gallium/drivers/ao46mtl')]
+  incs_for_egl += [include_directories('../gallium/frontends/hgl')]
+  # The built-in EGL driver also owns the CGL-free Cocoa presentation bridge.
+  incs_for_egl += [include_directories(get_option('ao46mtl-include-path'))]
+  link_for_egl += [libmesa, libgallium, libsthgl, libglapi]
+  link_whole_for_egl += [libglapi_bridge]
+  deps_for_egl += [driver_ao46mtl]
+  if host_machine.system() == 'darwin'
+    # The staged standard ABI layout keeps AO46's CGL-free backend next to
+    # Mesa's public libraries under lib/openglkhr.
+    build_rpath_for_egl = '@loader_path/openglkhr'
+    install_rpath_for_egl = '@loader_path/openglkhr'
+    link_args_for_egl += ['-Wl,-install_name,@rpath/libEGL.1.dylib']
+  endif
 elif with_platform_windows
   c_args_for_egl += [
     '-DEGLAPI=', '-DPUBLIC='
@@ -214,15 +240,61 @@ libegl = shared_library(
   gnu_symbol_visibility : 'hidden',
   include_directories : incs_for_egl,
   link_with : [link_for_egl],
+  link_whole : [link_whole_for_egl],
   link_args : [ld_args_bsymbolic, ld_args_gc_sections, link_args_for_egl],
   link_depends : [link_deps_for_egl],
   dependencies : [deps_for_egl, dep_dl, dep_libdrm, dep_clock, dep_thread, idep_mesautil],
   install : true,
+  build_rpath : build_rpath_for_egl,
+  install_rpath : install_rpath_for_egl,
   version : egl_lib_version,
   soversion : egl_lib_soversion,
   name_prefix : host_machine.system() == 'windows' ? 'lib' : [],  # always use lib, but avoid warnings on !windows
   vs_module_defs : egl_def
 )
+
+if with_gallium_ao46mtl and not with_glvnd
+  ao46mtl_libgl_alias = custom_target(
+    'ao46mtl-libGL-alias',
+    input : libegl,
+    output : 'libGL.dylib',
+    command : [find_program('sh'), files('drivers/ao46mtl/libgl_alias.sh'), '@INPUT@', '@OUTPUT@'],
+    build_by_default : true,
+    install : false,
+  )
+  meson.add_install_script(
+    find_program('sh'),
+    files('drivers/ao46mtl/install_libgl_alias.sh'),
+    get_option('libdir'),
+    install_tag : 'runtime',
+  )
+
+  ao46mtl_egl_smoke = executable(
+    'ao46mtl-egl-smoke',
+    files('drivers/ao46mtl/ao46mtl_egl_smoke.c'),
+    include_directories : [inc_include],
+    link_with : [libegl],
+    dependencies : [dep_dl],
+  )
+  test(
+    'ao46mtl-egl-pbuffer-smoke',
+    ao46mtl_egl_smoke,
+    env : ['DYLD_LIBRARY_PATH=' + meson.current_build_dir()],
+    suite : ['egl'],
+  )
+
+  # A WindowServer is required, so this visible presentation smoke is built
+  # for direct invocation rather than registered as a headless Meson test.
+  ao46mtl_egl_window_smoke = executable(
+    'ao46mtl-egl-window-smoke',
+    files('drivers/ao46mtl/ao46mtl_egl_window_smoke.m'),
+    include_directories : [inc_include],
+    link_with : [libegl],
+    dependencies : [dep_dl],
+    link_args : ['-framework', 'AppKit', '-framework', 'QuartzCore',
+                 '-framework', 'Metal'],
+  )
+endif
 
 if with_glvnd
   configure_file(

@@ -234,6 +234,7 @@ with_gallium_lima = gallium_drivers.contains('lima')
 with_gallium_zink = gallium_drivers.contains('zink')
 with_gallium_d3d12 = gallium_drivers.contains('d3d12')
 with_gallium_asahi = gallium_drivers.contains('asahi')
+with_gallium_ao46mtl = gallium_drivers.contains('ao46mtl')
 with_gallium_rocket = gallium_drivers.contains('rocket')
 with_gallium_ethosu = gallium_drivers.contains('ethosu')
 foreach gallium_driver : gallium_drivers
@@ -559,7 +560,7 @@ with_xlib_lease = get_option('xlib-lease') \
   .allowed()
 
 with_egl = get_option('egl') \
-  .require(with_platform_windows or with_platform_haiku or with_dri or with_platform_android, error_message : 'EGL requires DRI, Haiku, Windows or Android') \
+  .require(with_platform_windows or with_platform_haiku or with_dri or with_platform_android or with_gallium_ao46mtl, error_message : 'EGL requires DRI, Haiku, Windows, Android, or ao46mtl') \
   .require(with_glx != 'xlib', error_message :'EGL requires DRI, but GLX is being built with xlib support') \
   .disable_auto_if(with_platform_haiku) \
   .allowed()

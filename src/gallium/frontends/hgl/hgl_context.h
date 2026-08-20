@@ -8,6 +8,8 @@
 #ifndef HGL_CONTEXT_H
 #define HGL_CONTEXT_H
 
+#include <stdint.h>
+
 #include "util/u_thread.h"
 #include "util/format/u_formats.h"
 #include "util/compiler.h"
@@ -38,7 +40,7 @@ extern "C" {
 
 #define CONTEXT_MAX 32
 
-typedef int64 context_id;
+typedef int64_t context_id;
 
 
 struct hgl_buffer
@@ -82,7 +84,7 @@ struct hgl_context* hgl_create_context(struct hgl_display *display, struct st_vi
 void hgl_destroy_context(struct hgl_context* context);
 
 // hgl visual
-void hgl_get_st_visual(struct st_visual* visual, ulong options);
+void hgl_get_st_visual(struct st_visual* visual, unsigned long options);
 
 // hgl display
 struct hgl_display* hgl_create_display(struct pipe_screen* screen);

@@ -76,6 +76,11 @@ if with_gallium_asahi
 else
   driver_asahi = declare_dependency()
 endif
+if with_gallium_ao46mtl
+  subdir('drivers/ao46mtl')
+else
+  driver_ao46mtl = declare_dependency()
+endif
 if with_gallium_r300 or with_gallium_radeonsi or with_gallium_r600
   subdir('winsys/radeon/drm')
 endif
@@ -232,7 +237,7 @@ if with_dri
   subdir('frontends/dri')
   subdir('targets/dri')
 endif
-if with_platform_haiku
+if with_platform_haiku or with_gallium_ao46mtl
   subdir('frontends/hgl')
 endif
 if with_gallium_st_d3d10umd

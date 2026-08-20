@@ -286,8 +286,6 @@ hgl_create_context(struct hgl_display *display, struct st_visual* visual, struct
 	assert(!context->st->frontend_context);
 	context->st->frontend_context = (void*)context;
 
-	struct st_context *stContext = (struct st_context*)context->st;
-
 	return context;
 }
 
@@ -305,7 +303,7 @@ hgl_destroy_context(struct hgl_context* context)
 
 
 void
-hgl_get_st_visual(struct st_visual* visual, ulong options)
+hgl_get_st_visual(struct st_visual* visual, unsigned long options)
 {
 	CALLED();
 

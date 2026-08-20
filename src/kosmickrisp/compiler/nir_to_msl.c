@@ -111,7 +111,24 @@ emit_inputs(struct nir_to_msl_ctx *ctx, nir_shader *shader)
    }
    P_IND(ctx, "constant Buffer &buf0 [[buffer(0)]],\n");
    P_IND(ctx, "constant SamplerTable &sampler_table [[buffer(1)]]");
+   for (unsigned binding = 1; binding < 16; ++binding) {
+      if (!(ctx->static_ubo_mask & (UINT16_C(1) << binding)))
+         continue;
+
+      P(ctx, ",\n");
+      P_IND(ctx, "constant Buffer &buf%u [[buffer(%u)]]", binding,
+            ctx->static_ubo_first_buffer + binding - 1);
+   }
+   for (unsigned binding = 2; binding < 16; ++binding) {
+      if (!(ctx->static_buffer_mask & (UINT16_C(1) << binding)))
+         continue;
+
+      assert(!(ctx->static_ubo_mask & (UINT16_C(1) << binding)));
+      P(ctx, ",\n");
+      P_IND(ctx, "constant Buffer &buf%u [[buffer(%u)]]", binding, binding);
+   }
    bool emitted_static_textures[64] = { false };
+   bool emitted_static_samplers[64] = { false };
    nir_foreach_function_impl(impl, shader) {
       nir_foreach_block(block, impl) {
          nir_foreach_instr(instr, block) {
@@ -119,26 +136,35 @@ emit_inputs(struct nir_to_msl_ctx *ctx, nir_shader *shader)
                continue;
 
             nir_tex_instr *tex = nir_instr_as_tex(instr);
-            if (nir_tex_get_src(tex, nir_tex_src_texture_handle))
-               continue;
-            if (tex->texture_index >= ARRAY_SIZE(emitted_static_textures) ||
-                emitted_static_textures[tex->texture_index]) {
-               continue;
+            if (!nir_tex_get_src(tex, nir_tex_src_texture_handle) &&
+                tex->texture_index < ARRAY_SIZE(emitted_static_textures) &&
+                !emitted_static_textures[tex->texture_index]) {
+               P(ctx, ",\n");
+               P_INDENT(ctx);
+               if (tex->is_shadow) {
+                  P(ctx, "depth%s%s<float>", texture_dim(tex->sampler_dim),
+                    tex->is_array ? "_array" : "");
+               } else {
+                  P(ctx, "texture%s%s<%s>", texture_dim(tex->sampler_dim),
+                    tex->is_array ? "_array" : "",
+                    tex_type_name(tex->dest_type));
+               }
+               P(ctx, " tex_%u [[texture(%u)]]", tex->texture_index,
+                 tex->texture_index);
+               emitted_static_textures[tex->texture_index] = true;
             }
 
-            P(ctx, ",\n");
-            P_INDENT(ctx);
-            if (tex->is_shadow) {
-               P(ctx, "depth%s%s<float>", texture_dim(tex->sampler_dim),
-                 tex->is_array ? "_array" : "");
-            } else {
-               P(ctx, "texture%s%s<%s>", texture_dim(tex->sampler_dim),
-                 tex->is_array ? "_array" : "",
-                 tex_type_name(tex->dest_type));
+            if (ctx->use_static_sampler_bindings &&
+                nir_tex_instr_need_sampler(tex) && !tex->embedded_sampler &&
+                !nir_tex_get_src(tex, nir_tex_src_sampler_handle) &&
+                tex->sampler_index < ARRAY_SIZE(emitted_static_samplers) &&
+                !emitted_static_samplers[tex->sampler_index]) {
+               P(ctx, ",\n");
+               P_INDENT(ctx);
+               P(ctx, "sampler sampler_%u [[sampler(%u)]]", tex->sampler_index,
+                 tex->sampler_index);
+               emitted_static_samplers[tex->sampler_index] = true;
             }
-            P(ctx, " tex_%u [[texture(%u)]]", tex->texture_index,
-              tex->texture_index);
-            emitted_static_textures[tex->texture_index] = true;
          }
       }
    }
@@ -259,6 +285,10 @@ sampler_src_to_msl(struct nir_to_msl_ctx *ctx,
    }
 
    if (nir_tex_instr_need_sampler(tex) && !tex->embedded_sampler) {
+      if (ctx->use_static_sampler_bindings && tex->sampler_index < 64) {
+         P(ctx, "sampler_%u", tex->sampler_index);
+         return;
+      }
       P(ctx, "sampler_table.handles[%u]", tex->sampler_index);
       return;
    }
@@ -1403,14 +1433,25 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
    }
    case nir_intrinsic_load_ubo: {
       const char *type = msl_type_for_def(ctx->types, &instr->def);
-      P(ctx, "*((constant %s*)(((constant char *)&buf0.contents[0]) + ", type);
+      assert(nir_src_is_const(instr->src[0]));
+      unsigned binding = nir_src_as_uint(instr->src[0]);
+      assert(binding == 0 ||
+             (binding < 16 && (ctx->static_ubo_mask & (UINT16_C(1) << binding))));
+      P(ctx, "*((constant %s*)(((constant char *)&buf%u.contents[0]) + ", type,
+        binding);
       src_to_msl(ctx, &instr->src[1]);
       P(ctx, "));\n");
       break;
    }
-   case nir_intrinsic_load_buffer_ptr_kk:
-      P(ctx, "(ulong)&buf%d.contents[0];\n", nir_intrinsic_binding(instr));
+   case nir_intrinsic_load_buffer_ptr_kk: {
+      const unsigned binding = nir_intrinsic_binding(instr);
+
+      assert(binding == 0 ||
+             (binding >= 2 && binding < 16 &&
+              (ctx->static_buffer_mask & (UINT16_C(1) << binding))));
+      P(ctx, "(ulong)&buf%u.contents[0];\n", binding);
       break;
+   }
    case nir_intrinsic_load_per_draw_ptr_kk:
       P(ctx, "(ulong)&per_draw.contents[0];\n");
       break;
@@ -2562,6 +2603,10 @@ nir_to_msl(nir_shader *shader, struct nir_to_msl_options *options)
       .shader = shader,
       .text = _mesa_string_buffer_create(options->mem_ctx, 1024),
       .disabled_workarounds = options->disabled_workarounds,
+      .use_static_sampler_bindings = options->use_static_sampler_bindings,
+      .static_ubo_mask = options->static_ubo_mask,
+      .static_ubo_first_buffer = options->static_ubo_first_buffer,
+      .static_buffer_mask = options->static_buffer_mask,
    };
    nir_function_impl *impl = nir_shader_get_entrypoint(shader);
    msl_gather_info(&ctx, options);

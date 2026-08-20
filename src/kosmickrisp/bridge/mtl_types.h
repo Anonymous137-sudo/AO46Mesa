@@ -119,6 +119,19 @@ enum mtl_primitive_topology_class {
    MTL_PRIMITIVE_TOPOLOGY_CLASS_TRIANGLE = 3,
 };
 
+/* MTLVertexDescriptor values used by the public MTL4 render-pipeline bridge. */
+enum mtl_vertex_format {
+   MTL_VERTEX_FORMAT_INVALID = 0,
+   MTL_VERTEX_FORMAT_FLOAT2 = 29,
+   MTL_VERTEX_FORMAT_FLOAT4 = 31,
+};
+
+enum mtl_vertex_step_function {
+   MTL_VERTEX_STEP_FUNCTION_CONSTANT = 0,
+   MTL_VERTEX_STEP_FUNCTION_PER_VERTEX = 1,
+   MTL_VERTEX_STEP_FUNCTION_PER_INSTANCE = 2,
+};
+
 enum mtl_texture_type {
    MTL_TEXTURE_TYPE_1D = 0u,
    MTL_TEXTURE_TYPE_1D_ARRAY = 1u,

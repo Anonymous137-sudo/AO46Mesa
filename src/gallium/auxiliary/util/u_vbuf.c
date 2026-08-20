@@ -274,6 +274,16 @@ static const struct {
    { PIPE_FORMAT_R8G8_SSCALED,         PIPE_FORMAT_R32G32_FLOAT },
    { PIPE_FORMAT_R8G8B8_SSCALED,       PIPE_FORMAT_R32G32B32_FLOAT },
    { PIPE_FORMAT_R8G8B8A8_SSCALED,     PIPE_FORMAT_R32G32B32A32_FLOAT },
+   /* AO46 uses this standard path for the packed formats Metal cannot fetch
+    * one-to-one. The generic translator preserves the original semantics. */
+   { PIPE_FORMAT_R10G10B10A2_UNORM,    PIPE_FORMAT_R32G32B32A32_FLOAT },
+   { PIPE_FORMAT_B10G10R10A2_UNORM,    PIPE_FORMAT_R32G32B32A32_FLOAT },
+   { PIPE_FORMAT_R10G10B10A2_SNORM,    PIPE_FORMAT_R32G32B32A32_FLOAT },
+   { PIPE_FORMAT_B10G10R10A2_SNORM,    PIPE_FORMAT_R32G32B32A32_FLOAT },
+   { PIPE_FORMAT_R10G10B10A2_USCALED,  PIPE_FORMAT_R32G32B32A32_FLOAT },
+   { PIPE_FORMAT_B10G10R10A2_USCALED,  PIPE_FORMAT_R32G32B32A32_FLOAT },
+   { PIPE_FORMAT_R10G10B10A2_SSCALED,  PIPE_FORMAT_R32G32B32A32_FLOAT },
+   { PIPE_FORMAT_B10G10R10A2_SSCALED,  PIPE_FORMAT_R32G32B32A32_FLOAT },
 };
 
 void u_vbuf_get_caps(struct pipe_screen *screen, struct u_vbuf_caps *caps,
@@ -299,7 +309,15 @@ void u_vbuf_get_caps(struct pipe_screen *screen, struct u_vbuf_caps *caps,
          continue;
 
       if (!screen->is_format_supported(screen, format, PIPE_BUFFER, 0, 0,
-                                       PIPE_BIND_VERTEX_BUFFER)) {
+                                       PIPE_BIND_VERTEX_BUFFER) ||
+          (format == PIPE_FORMAT_R10G10B10A2_UNORM ||
+           format == PIPE_FORMAT_B10G10R10A2_UNORM ||
+           format == PIPE_FORMAT_R10G10B10A2_SNORM ||
+           format == PIPE_FORMAT_B10G10R10A2_SNORM ||
+           format == PIPE_FORMAT_R10G10B10A2_USCALED ||
+           format == PIPE_FORMAT_B10G10R10A2_USCALED ||
+           format == PIPE_FORMAT_R10G10B10A2_SSCALED ||
+           format == PIPE_FORMAT_B10G10R10A2_SSCALED)) {
          caps->format_translation[format] = vbuf_format_fallbacks[i].to;
          caps->fallback_always = true;
       }

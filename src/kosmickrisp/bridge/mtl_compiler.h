@@ -65,9 +65,18 @@ void mtl_render_pipeline_descriptor_set_rasterization_enabled(
 void mtl_render_pipeline_descriptor_set_max_vertex_amplification_count(
    mtl_render_pipeline_descriptor *descriptor, uint32_t count);
 
+void mtl_render_pipeline_descriptor_set_vertex_attribute(
+   mtl_render_pipeline_descriptor *descriptor, uint32_t attribute_index,
+   enum mtl_vertex_format format, uint32_t offset, uint32_t buffer_index);
+
+void mtl_render_pipeline_descriptor_set_vertex_buffer_layout(
+   mtl_render_pipeline_descriptor *descriptor, uint32_t buffer_index,
+   uint32_t stride, enum mtl_vertex_step_function step_function,
+   uint32_t step_rate);
+
 /* Render pipeline */
 mtl_render_pipeline_state *
 mtl_new_render_pipeline(mtl_compiler *compiler,
-                        mtl_render_pass_descriptor *descriptor);
+                        mtl_render_pipeline_descriptor *descriptor);
 
 #endif /* MTL_COMPILER_H */

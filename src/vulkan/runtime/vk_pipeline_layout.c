@@ -34,7 +34,8 @@
 static void
 vk_pipeline_layout_init(struct vk_device *device,
                         struct vk_pipeline_layout *layout,
-                        const VkPipelineLayoutCreateInfo *pCreateInfo)
+                        const VkPipelineLayoutCreateInfo *pCreateInfo,
+                        const VkAllocationCallbacks *pAllocator)
 {
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
    assert(pCreateInfo->setLayoutCount <= MESA_VK_MAX_DESCRIPTOR_SETS);
@@ -46,6 +47,9 @@ vk_pipeline_layout_init(struct vk_device *device,
    layout->set_count = pCreateInfo->setLayoutCount;
    layout->push_descriptor_idx = UINT32_MAX;
    layout->destroy = vk_pipeline_layout_destroy;
+   layout->has_allocator = pAllocator != NULL;
+   if (pAllocator != NULL)
+      layout->allocator = *pAllocator;
 
    uint32_t dynamic_descriptor_count = 0;
    for (uint32_t s = 0; s < pCreateInfo->setLayoutCount; s++) {
@@ -75,18 +79,20 @@ vk_pipeline_layout_init(struct vk_device *device,
 
 void *
 vk_pipeline_layout_zalloc(struct vk_device *device, size_t size,
-                          const VkPipelineLayoutCreateInfo *pCreateInfo)
+                          const VkPipelineLayoutCreateInfo *pCreateInfo,
+                          const VkAllocationCallbacks *pAllocator)
 {
    /* Because we're reference counting and lifetimes may not be what the
     * client expects, these have to be allocated off the device and not as
     * their own object.
     */
    struct vk_pipeline_layout *layout =
-      vk_zalloc(&device->alloc, size, 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+      vk_zalloc2(&device->alloc, pAllocator, size, 8,
+                 VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (layout == NULL)
       return NULL;
 
-   vk_pipeline_layout_init(device, layout, pCreateInfo);
+   vk_pipeline_layout_init(device, layout, pCreateInfo, pAllocator);
    return layout;
 }
 
@@ -101,7 +107,7 @@ vk_pipeline_layout_multizalloc(struct vk_device *device,
    if (layout == NULL)
       return NULL;
 
-   vk_pipeline_layout_init(device, layout, pCreateInfo);
+   vk_pipeline_layout_init(device, layout, pCreateInfo, NULL);
    return layout;
 }
 
@@ -109,14 +115,14 @@ vk_pipeline_layout_multizalloc(struct vk_device *device,
 VKAPI_ATTR VkResult VKAPI_CALL
 vk_common_CreatePipelineLayout(VkDevice _device,
                                const VkPipelineLayoutCreateInfo *pCreateInfo,
-                               UNUSED const VkAllocationCallbacks *pAllocator,
+                               const VkAllocationCallbacks *pAllocator,
                                VkPipelineLayout *pPipelineLayout)
 {
    VK_FROM_HANDLE(vk_device, device, _device);
 
    struct vk_pipeline_layout *layout =
       vk_pipeline_layout_zalloc(device, sizeof(struct vk_pipeline_layout),
-                                pCreateInfo);
+                                pCreateInfo, pAllocator);
    if (layout == NULL)
       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
 
@@ -136,7 +142,8 @@ vk_pipeline_layout_destroy(struct vk_device *device,
          vk_descriptor_set_layout_unref(device, layout->set_layouts[s]);
    }
 
-   vk_object_free(device, NULL, layout);
+   vk_object_free(device, layout->has_allocator ? &layout->allocator : NULL,
+                  layout);
 }
 
 VKAPI_ATTR void VKAPI_CALL

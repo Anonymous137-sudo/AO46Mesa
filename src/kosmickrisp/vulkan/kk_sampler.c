@@ -144,7 +144,14 @@ kk_CreateSampler(VkDevice device, const VkSamplerCreateInfo *pCreateInfo,
    if (!sampler)
       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   struct mtl_sampler_packed packed = pack_sampler_info(pCreateInfo);
+   const bool custom_border =
+      uses_border(pCreateInfo) && is_border_color_custom(pCreateInfo->borderColor, true);
+   VkSamplerCreateInfo clamp_to_one_info = *pCreateInfo;
+   if (custom_border)
+      clamp_to_one_info.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+
+   struct mtl_sampler_packed packed =
+      pack_sampler_info(custom_border ? &clamp_to_one_info : pCreateInfo);
    result = kk_sampler_heap_add(dev, packed, &sampler->planes[0].hw);
    if (result != VK_SUCCESS) {
       kk_DestroySampler(device, kk_sampler_to_handle(sampler), pAllocator);
@@ -178,6 +185,16 @@ kk_CreateSampler(VkDevice device, const VkSamplerCreateInfo *pCreateInfo,
          }
          sampler->plane_count = 2;
       }
+   } else if (custom_border) {
+      VkSamplerCreateInfo clamp_to_zero_info = *pCreateInfo;
+      clamp_to_zero_info.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+      packed = pack_sampler_info(&clamp_to_zero_info);
+      result = kk_sampler_heap_add(dev, packed, &sampler->planes[1].hw);
+      if (result != VK_SUCCESS) {
+         kk_DestroySampler(device, kk_sampler_to_handle(sampler), pAllocator);
+         return result;
+      }
+      sampler->plane_count = 2;
    }
 
    /* LOD data passed in the descriptor set */
@@ -185,10 +202,8 @@ kk_CreateSampler(VkDevice device, const VkSamplerCreateInfo *pCreateInfo,
    sampler->lod_min_fp16 = _mesa_float_to_half(pCreateInfo->minLod);
    sampler->lod_max_fp16 = _mesa_float_to_half(pCreateInfo->maxLod);
 
-   /* Border color passed in the descriptor */
-   sampler->has_border = uses_border(pCreateInfo) &&
-                         is_border_color_custom(pCreateInfo->borderColor, true);
-   if (sampler->has_border) {
+   if (custom_border) {
+      /* Preserve the requested border for shader-side emulation. */
       /* We also need to record the border.
        *
        * If there is a border colour component mapping, we need to swizzle with
@@ -207,6 +222,7 @@ kk_CreateSampler(VkDevice device, const VkSamplerCreateInfo *pCreateInfo,
       }
 
       sampler->custom_border = bc;
+      sampler->has_border = true;
    }
 
    *pSampler = kk_sampler_to_handle(sampler);

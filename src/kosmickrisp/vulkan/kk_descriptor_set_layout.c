@@ -110,7 +110,7 @@ kk_descriptor_set_layout_destroy(struct vk_device *vk_dev,
    struct kk_descriptor_set_layout *layout =
       vk_to_kk_descriptor_set_layout(vk_layout);
 
-   vk_object_free(&dev->vk, NULL, layout);
+   vk_descriptor_set_layout_destroy(&dev->vk, &layout->vk);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL
@@ -149,7 +149,8 @@ kk_CreateDescriptorSetLayout(VkDevice device,
    VK_MULTIALLOC_DECL(&ma, struct kk_sampler *, samplers,
                       immutable_sampler_count);
 
-   if (!vk_descriptor_set_layout_multizalloc(&dev->vk, &ma, pCreateInfo))
+   if (!vk_descriptor_set_layout_multizalloc_with_allocator(
+          &dev->vk, &ma, pCreateInfo, pAllocator))
       return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
 
    layout->vk.destroy = kk_descriptor_set_layout_destroy;

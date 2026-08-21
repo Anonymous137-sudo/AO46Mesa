@@ -23,9 +23,7 @@
 VKAPI_ATTR VkResult VKAPI_CALL
 kk_EnumerateInstanceVersion(uint32_t *pApiVersion)
 {
-   uint32_t version_override = vk_get_version_override();
-   *pApiVersion = version_override ? version_override
-                                   : VK_MAKE_VERSION(1, 4, VK_HEADER_VERSION);
+   *pApiVersion = kk_get_api_version();
 
    return VK_SUCCESS;
 }
@@ -34,9 +32,7 @@ static const struct vk_instance_extension_table instance_extensions = {
 #ifdef KK_USE_WSI_PLATFORM
    .KHR_get_surface_capabilities2 = true,
    .KHR_surface = true,
-   .KHR_surface_maintenance1 = true,
    .KHR_surface_protected_capabilities = true,
-   .EXT_surface_maintenance1 = true,
    .EXT_swapchain_colorspace = true,
 #endif
 #ifdef VK_USE_PLATFORM_WAYLAND_KHR

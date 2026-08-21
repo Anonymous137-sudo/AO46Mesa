@@ -50,6 +50,11 @@ struct vk_descriptor_set_layout {
    void (*destroy)(struct vk_device *device,
                    struct vk_descriptor_set_layout *layout);
 
+   /* Descriptor layouts can remain alive after the application's Destroy
+    * call.  Keep the allocation contract for their final unref. */
+   bool has_allocator;
+   VkAllocationCallbacks allocator;
+
    /** Reference count
     *
     * It's often necessary to store a pointer to the descriptor set layout in
@@ -78,6 +83,11 @@ void *vk_descriptor_set_layout_multizalloc(struct vk_device *device,
                                            struct vk_multialloc *ma,
                                            const VkDescriptorSetLayoutCreateInfo *pCreateInfo);
 
+void *vk_descriptor_set_layout_multizalloc_with_allocator(
+   struct vk_device *device, struct vk_multialloc *ma,
+   const VkDescriptorSetLayoutCreateInfo *pCreateInfo,
+   const VkAllocationCallbacks *pAllocator);
+
 void vk_descriptor_set_layout_destroy(struct vk_device *device,
                                       struct vk_descriptor_set_layout *layout);
 
@@ -103,4 +113,3 @@ vk_descriptor_set_layout_unref(struct vk_device *device,
 #endif
 
 #endif /* VK_DESCRIPTOR_SET_LAYOUT_H */
-

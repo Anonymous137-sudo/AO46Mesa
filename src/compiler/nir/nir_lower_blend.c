@@ -1056,10 +1056,30 @@ nir_lower_blend_instr(nir_builder *b, nir_intrinsic_instr *store, void *data)
       return true;
    }
 
-   /* Grab the input color.  We always want 4 channels during blend.  Dead
-    * code will clean up any channels we don't need.
+   /*
+    * Align the source and write mask with the render-target channels before
+    * blending.  Component-decorated fragment outputs may use a source vector
+    * beginning at channel zero while their store starts at a later destination
+    * component.  The blend math always operates on a complete color vector.
     */
-   nir_def *src = nir_pad_vector(b, store->src[0].ssa, 4);
+   const unsigned store_component = nir_intrinsic_component(store);
+   const unsigned store_num_components = store->num_components;
+   const unsigned store_write_mask = nir_intrinsic_write_mask(store);
+   nir_def *src_channels[4];
+   const unsigned src_bit_size = nir_src_bit_size(store->src[0]);
+
+   assert(store_component + store_num_components <= 4);
+   for (unsigned c = 0; c < 4; ++c) {
+      unsigned src_component = c - store_component;
+      if (c >= store_component && src_component < store_num_components &&
+          (store_write_mask & BITFIELD_BIT(src_component))) {
+         src_channels[c] = nir_channel(b, store->src[0].ssa, src_component);
+      } else {
+         src_channels[c] = nir_undef(b, 1, src_bit_size);
+      }
+   }
+
+   nir_def *src = nir_vec(b, src_channels, 4);
 
    assert(nir_src_as_uint(store->src[1]) == 0 && "store_output invariant");
 
@@ -1117,8 +1137,10 @@ nir_lower_blend_instr(nir_builder *b, nir_intrinsic_instr *store, void *data)
 
    /* Grow or shrink the store destination as needed */
    store->num_components = num_components;
-   nir_intrinsic_set_write_mask(store, nir_intrinsic_write_mask(store) &
-                                          nir_component_mask(num_components));
+   nir_intrinsic_set_component(store, 0);
+   nir_intrinsic_set_write_mask(store,
+                                (store_write_mask << store_component) &
+                                   nir_component_mask(num_components));
 
    /* Write out the final color instead of the input */
    nir_src_rewrite(&store->src[0], blended);

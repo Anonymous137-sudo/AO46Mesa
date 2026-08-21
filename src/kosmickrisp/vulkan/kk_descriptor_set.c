@@ -107,6 +107,7 @@ get_sampled_image_view_desc(VkDescriptorType descriptor_type,
       }
 
       if (sampler->has_border) {
+         /* Paired samplers emulate opaque-black borders on packed RGBA4. */
          assert(sampler->plane_count == 2);
          desc[0].clamp_0_sampler_index_or_negative =
             sampler->planes[1].hw->index;
@@ -116,7 +117,6 @@ get_sampled_image_view_desc(VkDescriptorType descriptor_type,
 
          static_assert(sizeof(desc[0].border) == sizeof(sampler->custom_border),
                        "fixed format");
-
          memcpy(desc[0].border, sampler->custom_border.uint32,
                 sizeof(sampler->custom_border));
       }

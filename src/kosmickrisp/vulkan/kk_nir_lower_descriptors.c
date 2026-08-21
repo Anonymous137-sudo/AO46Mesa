@@ -31,6 +31,9 @@ struct lower_descriptors_ctx {
    nir_address_format ssbo_addr_format;
 };
 
+/* Consumed during descriptor lowering before NIR reaches the MSL compiler. */
+#define KK_TEXTURE_FLAG_CLAMP_TO_0 (1u << 0)
+
 static const struct kk_descriptor_set_binding_layout *
 get_binding_layout(uint32_t set, uint32_t binding,
                    const struct lower_descriptors_ctx *ctx)
@@ -598,6 +601,10 @@ lower_tex(nir_builder *b, nir_tex_instr *tex,
    if (sampler != NULL) {
       unsigned offs =
          offsetof(struct kk_sampled_image_descriptor, sampler_index);
+      if (tex->backend_flags & KK_TEXTURE_FLAG_CLAMP_TO_0) {
+         offs = offsetof(struct kk_sampled_image_descriptor,
+                         clamp_0_sampler_index_or_negative);
+      }
 
       bool clamp_to_0 = tex->backend_flags & KK_TEXTURE_FLAG_CLAMP_TO_0;
       if (clamp_to_0)

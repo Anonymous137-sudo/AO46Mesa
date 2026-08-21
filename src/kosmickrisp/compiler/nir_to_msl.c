@@ -538,6 +538,7 @@ alu_to_msl(struct nir_to_msl_ctx *ctx, nir_alu_instr *instr)
       alu_funclike_precise(ctx, instr, "floor");
       break;
    case nir_op_ffma:
+   case nir_op_ffma_weak:
       alu_funclike_precise(ctx, instr, "fma");
       break;
    case nir_op_ffract:
@@ -2338,6 +2339,15 @@ msl_preprocess_nir(struct nir_shader *nir)
    NIR_PASS(_, nir, nir_opt_deref);
    nir_remove_non_entrypoints(nir);
 
+   /* MSL cannot encode runtime IO locations. Resolve indirect shader IO while
+    * it is still represented by derefs, before splitting array locations. */
+   NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
+            nir_var_shader_in | nir_var_shader_out, UINT32_MAX);
+
+   /* MSL entry-point maps carry one field per IO location. Split shader IO
+    * arrays before output lowering turns stores into function temporaries. */
+   NIR_PASS(_, nir, nir_lower_io_array_vars_to_elements_no_indirects, false);
+
    /* nir_lower_io_to_temporaries is required before nir_lower_blend since the
     * blending pass sinks writes to the end of the block where we may have a
     * jump, which is illegal.
@@ -2358,6 +2368,15 @@ msl_preprocess_nir(struct nir_shader *nir)
             glsl_count_attribute_slots,
             nir_lower_io_lower_64bit_to_32 |
                nir_lower_io_use_interpolated_input_intrinsics);
+
+   if (nir->info.stage == MESA_SHADER_VERTEX) {
+      /* The Metal VBO lowering requires direct attribute slots. Expand
+       * indirect vertex-input arrays while function-local storage is still
+       * available for the generic NIR lowering to select from. */
+      NIR_PASS(_, nir, nir_opt_constant_folding);
+      NIR_PASS(_, nir, nir_lower_io_indirect_loads, nir_var_shader_in);
+   }
+
    NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_function_temp, NULL);
 
    /* SPIR-V passes a combined image/sampler to a function by value: it packs

@@ -28,17 +28,6 @@
 #include "vk_drm_syncobj.h"
 #include "vk_shader_module.h"
 
-static uint32_t
-kk_get_vk_version()
-{
-   /* Version override takes priority */
-   const uint32_t version_override = vk_get_version_override();
-   if (version_override)
-      return version_override;
-
-   return VK_MAKE_VERSION(1, 4, VK_HEADER_VERSION);
-}
-
 static void
 kk_get_device_extensions(const struct kk_instance *instance,
                          const struct kk_env_settings *settings,
@@ -83,7 +72,7 @@ kk_get_device_extensions(const struct kk_instance *instance,
       .KHR_spirv_1_4 = true,
       .KHR_timeline_semaphore = true,
       .KHR_uniform_buffer_standard_layout = true,
-      .KHR_vulkan_memory_model = true, /* Required in Vulkan 1.3 */
+      .KHR_vulkan_memory_model = false,
       .EXT_buffer_device_address = true,
       .EXT_descriptor_indexing = true,
       .EXT_host_query_reset = true,
@@ -153,17 +142,13 @@ kk_get_device_extensions(const struct kk_instance *instance,
       .KHR_present_wait2 = true,
 #endif
       .KHR_robustness2 = true,
-      .KHR_shader_fma = true,
       .KHR_shader_maximal_reconvergence = true,
       .KHR_shader_relaxed_extended_instruction = true,
       .KHR_shader_subgroup_uniform_control_flow = true,
-      .KHR_shader_untyped_pointers = true,
 #ifdef KK_USE_WSI_PLATFORM
       .KHR_swapchain = true,
-      .KHR_swapchain_maintenance1 = true,
       .KHR_swapchain_mutable_format = true,
 #endif
-      .KHR_unified_image_layouts = true,
       .KHR_workgroup_memory_explicit_layout = true,
 
       .EXT_attachment_feedback_loop_layout = true,
@@ -199,9 +184,6 @@ kk_get_device_extensions(const struct kk_instance *instance,
       .EXT_shader_replicated_composites = true,
       .EXT_shader_subgroup_ballot = true,
       .EXT_shader_subgroup_vote = true,
-#ifdef KK_USE_WSI_PLATFORM
-      .EXT_swapchain_maintenance1 = true,
-#endif
       .EXT_vertex_attribute_robustness = true,
 
       .GOOGLE_decorate_string = true,
@@ -337,8 +319,11 @@ kk_get_device_features(
       .synchronization2 = true,
       .texelBufferAlignment = true,
       .textureCompressionASTC_HDR = true,
-      .vulkanMemoryModel = true,
-      .vulkanMemoryModelDeviceScope = true,
+      /* Metal exposes relaxed atomics only, so Vulkan-memory-model ordering
+       * and visibility chains must remain unavailable. */
+      .vulkanMemoryModel = false,
+      .vulkanMemoryModelDeviceScope = false,
+      .vulkanMemoryModelAvailabilityVisibilityChains = false,
 
       /* Vulkan 1.4 */
       .bresenhamLines = true,
@@ -532,7 +517,7 @@ kk_get_device_properties(const struct kk_physical_device *pdev,
       timestamp_frequency ? (1000000000.0f / (float)timestamp_frequency) : 1.0f;
 
    *properties = (struct vk_properties){
-      .apiVersion = kk_get_vk_version(),
+      .apiVersion = kk_get_api_version(),
       .driverVersion = vk_get_driver_version(),
       .vendorID =
          instance->force_vk_vendor != 0 ? instance->force_vk_vendor : 0x106b,
@@ -688,9 +673,11 @@ kk_get_device_properties(const struct kk_physical_device *pdev,
       .independentResolveNone = true,
       .independentResolve = true,
       .driverID = VK_DRIVER_ID_MESA_KOSMICKRISP,
-      .conformanceVersion = (VkConformanceVersion){1, 4, 3, 2},
+      .conformanceVersion = (VkConformanceVersion){0, 0, 0, 0},
       .denormBehaviorIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE,
-      .roundingModeIndependence = VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_NONE,
+      /* RTE differs for fp32 while fp16/fp64 remain paired. */
+      .roundingModeIndependence =
+         VK_SHADER_FLOAT_CONTROLS_INDEPENDENCE_32_BIT_ONLY,
       .shaderSignedZeroInfNanPreserveFloat16 = true,
       .shaderSignedZeroInfNanPreserveFloat32 = true,
       .shaderSignedZeroInfNanPreserveFloat64 = false,
@@ -700,7 +687,7 @@ kk_get_device_properties(const struct kk_physical_device *pdev,
       .shaderDenormFlushToZeroFloat16 = false,
       .shaderDenormFlushToZeroFloat32 = false,
       .shaderDenormFlushToZeroFloat64 = false,
-      .shaderRoundingModeRTEFloat16 = true,
+      .shaderRoundingModeRTEFloat16 = false,
       .shaderRoundingModeRTEFloat32 = true,
       .shaderRoundingModeRTEFloat64 = false,
       .shaderRoundingModeRTZFloat16 = false,

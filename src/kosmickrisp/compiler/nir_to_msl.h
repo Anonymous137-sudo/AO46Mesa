@@ -117,8 +117,12 @@ static const nir_shader_compiler_options kk_nir_options = {
    .lower_fdph = true,
    .has_fsub = true,
    .has_isub = true,
-   .float_mul_add16 = nir_float_muladd_support_has_ffma,
-   .float_mul_add32 = nir_float_muladd_support_has_ffma,
+   /* Preserve weak FMA until MSL emission. Folding it early can turn a
+    * FloatControls2 NaN-preserving cancellation into zero. */
+   .float_mul_add16 = nir_float_muladd_support_has_ffma |
+                      nir_float_muladd_support_keep_weak_ffma,
+   .float_mul_add32 = nir_float_muladd_support_has_ffma |
+                      nir_float_muladd_support_keep_weak_ffma,
    .lower_extract_word = true,
    .lower_extract_byte = true,
    .lower_insert_word = true,

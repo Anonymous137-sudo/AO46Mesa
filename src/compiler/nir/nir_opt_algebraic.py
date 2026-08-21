@@ -263,7 +263,8 @@ optimizations += [
    (('ilt', ('iand', a, b), '#b(is_pos_power_of_two)'), ('ieq', ('iand', a, b), 0)),
    (('ieq', ('ushr(is_used_once)', a, '#b'), 0), ('ult', a, ('ishl', 1, b))),
    (('ine', ('ushr(is_used_once)', a, '#b'), 0), ('uge', a, ('ishl', 1, b))),
-   (('~fadd', ('fneg', a), a), 0.0),
+   # -x + x is only zero when NaN preservation is not requested.
+   (('~fadd(nnan)', ('fneg', a), a), 0.0),
    (('fadd(nnan)', ('fneg', a), a), 0.0),
    (('iadd', ('ineg', a), a), 0),
    (('iadd', ('ineg', a), ('iadd', a, b)), b),
@@ -3621,7 +3622,7 @@ before_ffma_optimizations = [
 
    (('~fadd', ('fmul', a, b), ('fmul', a, c)), ('fmul', a, ('fadd', b, c))),
    (('iadd', ('imul', a, b), ('imul', a, c)), ('imul', a, ('iadd', b, c))),
-   (('~fadd', ('fneg', a), a), 0.0),
+   (('~fadd(nnan)', ('fneg', a), a), 0.0),
    (('iadd', ('ineg', a), a), 0),
    (('iadd', ('ineg', a), ('iadd', a, b)), b),
    (('iadd', a, ('iadd', ('ineg', a), b)), b),

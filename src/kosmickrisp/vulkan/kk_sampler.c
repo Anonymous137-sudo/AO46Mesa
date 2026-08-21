@@ -189,7 +189,6 @@ kk_CreateSampler(VkDevice device, const VkSamplerCreateInfo *pCreateInfo,
          kk_DestroySampler(device, kk_sampler_to_handle(sampler), pAllocator);
          return result;
       }
-
       sampler->plane_count = 2;
 
       /* We also need to record the border.

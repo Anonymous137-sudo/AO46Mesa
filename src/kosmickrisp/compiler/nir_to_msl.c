@@ -1047,9 +1047,25 @@ static void
 atomic_swap_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr,
                    const char *scope, bool shared)
 {
-   const char *atomic_op = atomic_op_to_msl(nir_intrinsic_atomic_op(instr));
+   const nir_atomic_op op = nir_intrinsic_atomic_op(instr);
+   const char *atomic_op = atomic_op_to_msl(op);
    const char *mem_order = "memory_order_relaxed";
    const char *type = msl_type_for_def(ctx->types, &instr->def);
+
+   /* Metal exchange returns the prior value directly; it has no expected-value pointer. */
+   if (op == nir_atomic_op_xchg) {
+      P_IND(ctx, "%s t%d = %s_explicit((%s atomic_%s*)", type,
+            instr->def.index, atomic_op, scope, type);
+      if (shared)
+         P(ctx, "&shared_data[");
+      src_to_msl(ctx, &instr->src[0]);
+      if (shared)
+         P(ctx, "]");
+      P(ctx, ", ");
+      src_to_msl(ctx, &instr->src[1]);
+      P(ctx, ", %s);\n", mem_order);
+      return;
+   }
 
    P_IND(ctx, "%s ta%d = ", type, instr->def.index);
    src_to_msl(ctx, &instr->src[1]);

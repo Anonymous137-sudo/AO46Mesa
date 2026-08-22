@@ -2374,7 +2374,7 @@ msl_preprocess_nir(struct nir_shader *nir)
        * indirect vertex-input arrays while function-local storage is still
        * available for the generic NIR lowering to select from. */
       NIR_PASS(_, nir, nir_opt_constant_folding);
-      NIR_PASS(_, nir, nir_lower_io_indirect_loads, nir_var_shader_in);
+      NIR_PASS(_, nir, nir_lower_io_indirect_loads, nir_var_shader_in, false);
    }
 
    NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_function_temp, NULL);

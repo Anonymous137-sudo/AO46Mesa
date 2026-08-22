@@ -31,9 +31,6 @@ struct lower_descriptors_ctx {
    nir_address_format ssbo_addr_format;
 };
 
-/* Consumed during descriptor lowering before NIR reaches the MSL compiler. */
-#define KK_TEXTURE_FLAG_CLAMP_TO_0 (1u << 0)
-
 static const struct kk_descriptor_set_binding_layout *
 get_binding_layout(uint32_t set, uint32_t binding,
                    const struct lower_descriptors_ctx *ctx)

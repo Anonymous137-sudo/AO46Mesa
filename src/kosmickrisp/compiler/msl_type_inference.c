@@ -424,13 +424,19 @@ infer_types_from_intrinsic(struct hash_table *types, nir_intrinsic_instr *instr)
       set_type(types, &instr->def,
                ti_type_from_pipe_format(nir_intrinsic_format(instr)));
       break;
+   case nir_intrinsic_image_load:
    case nir_intrinsic_bindless_image_load:
+      if (instr->intrinsic == nir_intrinsic_image_load)
+         set_type(types, &instr->src[0], TYPE_UINT);
       set_type(types, &instr->def,
                ti_type_from_nir(nir_intrinsic_dest_type(instr)));
       set_type(types, &instr->src[1], TYPE_UINT); // coords
       set_type(types, &instr->src[3], TYPE_UINT); // level
       break;
+   case nir_intrinsic_image_store:
    case nir_intrinsic_bindless_image_store:
+      if (instr->intrinsic == nir_intrinsic_image_store)
+         set_type(types, &instr->src[0], TYPE_UINT);
       set_type(types, &instr->src[1], TYPE_UINT); // coords
       set_type(types, &instr->src[3],
                ti_type_from_nir(nir_intrinsic_src_type(instr)));
@@ -440,14 +446,20 @@ infer_types_from_intrinsic(struct hash_table *types, nir_intrinsic_instr *instr)
    case nir_intrinsic_terminate_if:
       set_type(types, &instr->src[0], TYPE_BOOL);
       break;
+   case nir_intrinsic_image_atomic:
+   case nir_intrinsic_image_atomic_swap:
    case nir_intrinsic_bindless_image_atomic:
    case nir_intrinsic_bindless_image_atomic_swap: {
+      if (instr->intrinsic == nir_intrinsic_image_atomic ||
+          instr->intrinsic == nir_intrinsic_image_atomic_swap)
+         set_type(types, &instr->src[0], TYPE_UINT);
       set_type(types, &instr->src[1], TYPE_UINT); // coords
       set_type(types, &instr->src[2], TYPE_UINT); // level
       ti_type type =
          ti_type_from_nir(nir_atomic_op_type(nir_intrinsic_atomic_op(instr)));
       set_type(types, &instr->src[3], type);
-      if (instr->intrinsic == nir_intrinsic_bindless_image_atomic_swap)
+      if (instr->intrinsic == nir_intrinsic_image_atomic_swap ||
+          instr->intrinsic == nir_intrinsic_bindless_image_atomic_swap)
          set_type(types, &instr->src[4], type);
       set_type(types, &instr->def, type);
       break;

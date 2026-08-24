@@ -15,6 +15,130 @@ static const char *tex_type_name(nir_alu_type ty);
 static nir_src *nir_tex_get_src(struct nir_tex_instr *tex,
                                 nir_tex_src_type type);
 
+enum static_image_access {
+   STATIC_IMAGE_ACCESS_READ = 1,
+   STATIC_IMAGE_ACCESS_WRITE = 2,
+};
+
+struct static_image_info {
+   bool used;
+   enum glsl_sampler_dim dim;
+   bool arrayed;
+   nir_alu_type type;
+   enum gl_access_qualifier qualifiers;
+   unsigned access;
+};
+
+static bool
+get_static_image_index(const nir_intrinsic_instr *intr, unsigned *index)
+{
+   switch (intr->intrinsic) {
+   case nir_intrinsic_image_load:
+   case nir_intrinsic_image_store:
+   case nir_intrinsic_image_atomic:
+   case nir_intrinsic_image_atomic_swap:
+      break;
+   default:
+      return false;
+   }
+
+   if (!nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0]) >= 64)
+      return false;
+
+   *index = nir_src_as_uint(intr->src[0]);
+   return true;
+}
+
+static nir_alu_type
+get_static_image_type(const nir_intrinsic_instr *intr)
+{
+   if (nir_intrinsic_has_dest_type(intr))
+      return nir_intrinsic_dest_type(intr);
+   if (nir_intrinsic_has_src_type(intr))
+      return nir_intrinsic_src_type(intr);
+   if (nir_intrinsic_has_atomic_op(intr))
+      return nir_atomic_op_type(nir_intrinsic_atomic_op(intr)) |
+             intr->def.bit_size;
+
+   return nir_type_uint32;
+}
+
+static unsigned
+get_static_image_access(const nir_intrinsic_instr *intr)
+{
+   switch (intr->intrinsic) {
+   case nir_intrinsic_image_load:
+      return STATIC_IMAGE_ACCESS_READ;
+   case nir_intrinsic_image_store:
+      return STATIC_IMAGE_ACCESS_WRITE;
+   case nir_intrinsic_image_atomic:
+   case nir_intrinsic_image_atomic_swap:
+      return STATIC_IMAGE_ACCESS_READ | STATIC_IMAGE_ACCESS_WRITE;
+   default:
+      UNREACHABLE("invalid static image intrinsic");
+   }
+}
+
+static void
+emit_static_images(struct nir_to_msl_ctx *ctx, nir_shader *shader)
+{
+   struct static_image_info images[64] = {0};
+
+   nir_foreach_function_impl(impl, shader) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            nir_intrinsic_instr *intr;
+            struct static_image_info *info;
+            nir_alu_type type;
+            unsigned index;
+
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+
+            intr = nir_instr_as_intrinsic(instr);
+            if (!get_static_image_index(intr, &index))
+               continue;
+
+            type = get_static_image_type(intr);
+            info = &images[index];
+            if (info->used) {
+               assert(info->dim == nir_intrinsic_image_dim(intr));
+               assert(info->arrayed == nir_intrinsic_image_array(intr));
+               assert(info->type == type);
+            } else {
+               info->used = true;
+               info->dim = nir_intrinsic_image_dim(intr);
+               info->arrayed = nir_intrinsic_image_array(intr);
+               info->type = type;
+            }
+            info->qualifiers |= nir_intrinsic_access(intr);
+            info->access |= get_static_image_access(intr);
+         }
+      }
+   }
+
+   for (unsigned index = 0; index < ARRAY_SIZE(images); ++index) {
+      const struct static_image_info *info = &images[index];
+      const char *access;
+      const char *coherent;
+
+      if (!info->used)
+         continue;
+
+      access = info->access == STATIC_IMAGE_ACCESS_READ
+                  ? "read"
+                  : info->access == STATIC_IMAGE_ACCESS_WRITE ? "write"
+                                                               : "read_write";
+      coherent = info->qualifiers & ACCESS_COHERENT
+                    ? ", memory_coherence_device"
+                    : "";
+      P(ctx, ",\n");
+      P_IND(ctx, "texture%s%s<%s, access::%s%s> image_%u [[texture(%u)]]",
+            texture_dim(info->dim), info->arrayed ? "_array" : "",
+            tex_type_name(info->type), access, coherent, index, index);
+   }
+}
+
 static const char *
 get_stage_string(mesa_shader_stage stage)
 {
@@ -166,6 +290,7 @@ emit_inputs(struct nir_to_msl_ctx *ctx, nir_shader *shader)
          }
       }
    }
+   emit_static_images(ctx, shader);
    if (ctx->uses_per_draw_data) {
       P(ctx, ",\n");
       P_IND(ctx, "constant Buffer &per_draw [[buffer(2)]]\n");
@@ -797,6 +922,7 @@ instrinsic_needs_dest_type(nir_intrinsic_instr *instr)
        /* Atomic swaps have a custom codegen */
        op == nir_intrinsic_global_atomic_swap ||
        op == nir_intrinsic_shared_atomic_swap ||
+       op == nir_intrinsic_image_atomic_swap ||
        op == nir_intrinsic_bindless_image_atomic_swap)
       return false;
    return info->has_dest;
@@ -919,6 +1045,19 @@ image_coord_swizzle(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
       comps += 1;
 
    texture_src_coord_swizzle(ctx, &instr->src[1], comps, is_cube, is_array);
+}
+
+static void
+image_reference_to_msl(struct nir_to_msl_ctx *ctx,
+                       nir_intrinsic_instr *instr)
+{
+   unsigned index;
+
+   if (get_static_image_index(instr, &index)) {
+      P(ctx, "image_%u", index);
+   } else {
+      src_to_msl(ctx, &instr->src[0]);
+   }
 }
 
 /* Non-packed types have stricter alignment requirements that packed types.
@@ -1702,8 +1841,9 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
       P(ctx, "));\n");
       break;
    }
+   case nir_intrinsic_image_load:
    case nir_intrinsic_bindless_image_load:
-      src_to_msl(ctx, &instr->src[0]);
+      image_reference_to_msl(ctx, instr);
       P(ctx, ".read(");
       image_coord_swizzle(ctx, instr);
       if (nir_intrinsic_image_dim(instr) != GLSL_SAMPLER_DIM_BUF) {
@@ -1718,9 +1858,10 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
       }
       P(ctx, ";\n");
       break;
+   case nir_intrinsic_image_store:
    case nir_intrinsic_bindless_image_store:
       P_INDENT(ctx);
-      src_to_msl(ctx, &instr->src[0]);
+      image_reference_to_msl(ctx, instr);
       P(ctx, ".write(");
       src_to_msl(ctx, &instr->src[3]);
       P(ctx, ", ");
@@ -1731,20 +1872,22 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
       }
       P(ctx, ");\n");
       break;
+   case nir_intrinsic_image_atomic:
    case nir_intrinsic_bindless_image_atomic:
-      src_to_msl(ctx, &instr->src[0]);
+      image_reference_to_msl(ctx, instr);
       P(ctx, ".%s(", atomic_op_to_msl(nir_intrinsic_atomic_op(instr)));
       image_coord_swizzle(ctx, instr);
       P(ctx, ", ");
       src_to_msl(ctx, &instr->src[3]);
       P(ctx, ").x;\n");
       break;
+   case nir_intrinsic_image_atomic_swap:
    case nir_intrinsic_bindless_image_atomic_swap: {
       const char *type = msl_type_for_def(ctx->types, &instr->def);
       P_IND(ctx, "%s4 ta%d = ", type, instr->def.index);
       src_to_msl(ctx, &instr->src[3]);
       P(ctx, "; ");
-      src_to_msl(ctx, &instr->src[0]);
+      image_reference_to_msl(ctx, instr);
       P(ctx, ".%s(", atomic_op_to_msl(nir_intrinsic_atomic_op(instr)));
       image_coord_swizzle(ctx, instr);
       P(ctx, ", &ta%d, ", instr->def.index);

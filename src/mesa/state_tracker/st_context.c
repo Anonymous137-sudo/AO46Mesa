@@ -25,6 +25,8 @@
  *
  **************************************************************************/
 
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "main/accum.h"
 #include "main/context.h"
@@ -684,8 +686,16 @@ st_create_context_priv(struct gl_context *ctx, struct pipe_context *pipe,
    _mesa_override_extensions(ctx);
    _mesa_compute_version(ctx);
 
-   if (ctx->Version == 0 ||
-       !_mesa_initialize_dispatch_tables(ctx)) {
+   if (ctx->Version == 0) {
+      if (getenv("AO46_TRACE_RUNTIME"))
+         fprintf(stderr, "[AO46Mesa] context finalization failed: computed GL version is zero\n");
+      st_destroy_context_priv(st, false);
+      return NULL;
+   }
+
+   if (!_mesa_initialize_dispatch_tables(ctx)) {
+      if (getenv("AO46_TRACE_RUNTIME"))
+         fprintf(stderr, "[AO46Mesa] context finalization failed: dispatch allocation\n");
       /* This can happen when a core profile was requested, but the driver
        * does not support some features of GL 3.1 or later.
        */
@@ -777,8 +787,11 @@ st_create_context(gl_api api, struct pipe_context *pipe,
 
    /* gl_context must be 16-byte aligned due to the alignment on GLmatrix. */
    ctx = align_malloc(sizeof(struct gl_context), 16);
-   if (!ctx)
+   if (!ctx) {
+      if (getenv("AO46_TRACE_RUNTIME"))
+         fprintf(stderr, "[AO46Mesa] context creation failed: gl_context allocation\n");
       return NULL;
+   }
    memset(ctx, 0, sizeof(*ctx));
 
    ctx->pipe = pipe;
@@ -786,6 +799,8 @@ st_create_context(gl_api api, struct pipe_context *pipe,
 
    if (!_mesa_initialize_context(ctx, api, no_error, visual, shareCtx, &funcs,
                                  options)) {
+      if (getenv("AO46_TRACE_RUNTIME"))
+         fprintf(stderr, "[AO46Mesa] context creation failed: _mesa_initialize_context\n");
       align_free(ctx);
       return NULL;
    }
@@ -803,6 +818,8 @@ st_create_context(gl_api api, struct pipe_context *pipe,
 
    st = st_create_context_priv(ctx, pipe, options);
    if (!st) {
+      if (getenv("AO46_TRACE_RUNTIME"))
+         fprintf(stderr, "[AO46Mesa] context creation failed: st_create_context_priv\n");
       _mesa_free_context_data(ctx, true);
       align_free(ctx);
    }

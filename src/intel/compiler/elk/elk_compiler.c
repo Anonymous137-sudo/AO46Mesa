@@ -140,6 +140,8 @@ elk_get_compiler_config_value(const struct elk_compiler *compiler)
 
    insert_u64_bit(&config, compiler->precise_trig);
    bits++;
+   insert_u64_bit(&config, compiler->limit_trig_input_range);
+   bits++;
 
    enum intel_debug_flag debug_bits[] = {
       DEBUG_NO_DUAL_OBJECT_GS,

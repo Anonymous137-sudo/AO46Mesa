@@ -1800,8 +1800,7 @@ GENX(csf_launch_draw_indirect)(struct panfrost_batch *batch,
 }
 
 static struct pan_ptr
-csf_emit_fullscreen_dcd(struct panfrost_batch *batch,
-                        struct pan_ptr vertex_array, uint64_t resources,
+csf_emit_fullscreen_dcd(struct panfrost_batch *batch, uint64_t resources,
                         struct MALI_DCD_FLAGS_0 *dcd_flags0,
                         struct MALI_DCD_FLAGS_1 *dcd_flags1)
 {
@@ -1814,21 +1813,6 @@ csf_emit_fullscreen_dcd(struct panfrost_batch *batch,
       /* Flags */
       cfg.flags_0 = *dcd_flags0;
       cfg.flags_1 = *dcd_flags1;
-
-      /* Vertex descriptor */
-      if (vertex_array.cpu) {
-#if PAN_ARCH >= 12
-         cfg.vertex_pointer = vertex_array.gpu;
-#else
-         cfg.vertex_array.packet = true;
-         cfg.vertex_array.pointer = vertex_array.gpu;
-         cfg.vertex_array.vertex_packet_stride =
-            PAN_RUN_FULLSCREEN_PACKET_STRIDE;
-         cfg.vertex_array.vertex_attribute_stride =
-            PAN_RUN_FULLSCREEN_ATTRIB_STRIDE;
-#endif
-      }
-
       /* Depth/stencil and blend descriptor */
 #if PAN_ARCH == 10
       cfg.minimum_z = batch->minimum_z;
@@ -1877,12 +1861,9 @@ GENX(csf_launch_draw_fullscreen)(struct panfrost_batch *batch,
    }
 
    /* Build draw call. */
-   struct pan_ptr array = panfrost_emit_fullscreen_vertex_array(batch, type,
-                                                                attrib);
    uint64_t resources = panfrost_emit_resources(batch, MESA_SHADER_FRAGMENT);
-   struct pan_ptr dcd = csf_emit_fullscreen_dcd(batch, array, resources,
-                                                &dcd_flags0_unpacked,
-                                                &dcd_flags1_unpacked);
+   struct pan_ptr dcd = csf_emit_fullscreen_dcd(
+      batch, resources, &dcd_flags0_unpacked, &dcd_flags1_unpacked);
 
    struct mali_primitive_flags_packed primitive_flags;
    pan_pack(&primitive_flags, PRIMITIVE_FLAGS, cfg) {

@@ -38,6 +38,7 @@
 #include "pan_job.h"
 #include "pan_pool.h"
 #include "pan_precomp.h"
+#include "libpan_copy.h"
 #include "pan_resource.h"
 #include "pan_samples.h"
 #include "pan_shader.h"
@@ -3116,6 +3117,8 @@ panfrost_val_emit_varying_descriptors(struct panfrost_batch *batch)
 
    batch->nr_varying_attribs[MESA_SHADER_FRAGMENT] = fs_in_slots;
 
+   const bool fullscreen = batch->fullscreen_texcoord_buf != 0;
+
    for (uint32_t i = 0; i < fs_in_slots; i++) {
       const struct pan_varying_slot *fs_slot =
          pan_varying_layout_slot_at(fs_format, i);
@@ -3140,11 +3143,13 @@ panfrost_val_emit_varying_descriptors(struct panfrost_batch *batch)
          cfg.attribute_type = MALI_ATTRIBUTE_TYPE_VERTEX_PACKET;
          cfg.offset_enable = false;
          cfg.format = GENX(pan_format_from_pipe_format)(format)->hw;
-         cfg.table = 61;
+         /* Fullscreen on CSF uses a const buffer, everything else uses HCBs. */
+         cfg.table = fullscreen ? PAN_TABLE_ATTRIBUTE_BUFFER : 61;
          cfg.frequency = MALI_ATTRIBUTE_FREQUENCY_VERTEX;
          cfg.offset = 1024 + offset;
-         /* On v12+, the hardware-controlled buffer is at index 1 for varyings */
-         cfg.buffer_index = PAN_ARCH >= 12 ? 1 : 0;
+         /* On v12+, the hardware-controlled buffer is at index 1 for varyings.
+          * Fullscreen texcoords are on index 0 of ATTR_BUF. */
+         cfg.buffer_index = (PAN_ARCH >= 12 && !fullscreen) ? 1 : 0;
          cfg.attribute_stride = vs_layout->generic_size_B;
          cfg.packet_stride = vs_layout->generic_size_B + 16;
       }
@@ -3263,29 +3268,13 @@ panfrost_update_state_3d(struct panfrost_batch *batch)
          panfrost_emit_vertex_buffers(batch);
    }
 #else
-   unsigned vt_shader_dirty = ctx->dirty_shader[MESA_SHADER_VERTEX];
-   struct panfrost_compiled_shader *vs = ctx->prog[MESA_SHADER_VERTEX];
-   struct panfrost_vertex_state *vstate = ctx->vertex;
-   bool attr_offsetted_by_instance_base =
-      vstate->attr_depends_on_base_instance_mask &
-      BITFIELD_MASK(vs->info.attributes_read_count);
-#if PAN_ARCH >= 6
-   /* Bifrost needs to place texel buffers after the image attributes, so we
-    * need to emit them if textures or the shader is dirty. */
-   unsigned attribs_dirty_mask =
-      PAN_DIRTY_STAGE_IMAGE | PAN_DIRTY_STAGE_TEXTURE | PAN_DIRTY_STAGE_SHADER;
-#else
-   unsigned attribs_dirty_mask = PAN_DIRTY_STAGE_IMAGE | PAN_DIRTY_STAGE_SHADER;
-#endif
-
-   /* Vertex data, vertex shader and images accessed by the vertex shader have
-    * an impact on the attributes array, we need to re-emit anytime one of these
-    * parameters changes. */
-   if ((dirty & PAN_DIRTY_VERTEX) || (vt_shader_dirty & attribs_dirty_mask) ||
-       attr_offsetted_by_instance_base) {
-      batch->attribs[MESA_SHADER_VERTEX] = panfrost_emit_vertex_data(
-         batch, &batch->attrib_bufs[MESA_SHADER_VERTEX]);
-   }
+   /* Always re-emit vertex attributes, in midgard and bifrost they depend on
+    * per-draw parameters (e.g. vertex_count, instancing, images and textures),
+    * which are likely to change every draw, so don't bother trying to save an
+    * attribute[_buffer] re-emission.
+    */
+   batch->attribs[MESA_SHADER_VERTEX] = panfrost_emit_vertex_data(
+      batch, &batch->attrib_bufs[MESA_SHADER_VERTEX]);
 #endif
 }
 
@@ -3714,6 +3703,17 @@ panfrost_draw_fullscreen(struct panfrost_context *ctx,
    panfrost_update_shader_variant(ctx, MESA_SHADER_VERTEX);
    panfrost_update_active_prim(ctx, MESA_PRIM_QUADS);
 
+#if PAN_ARCH >= 10
+   /* On CSF, emit texcoord varyings as a constant buffer. */
+   struct pan_ptr texcoord_array =
+      panfrost_emit_fullscreen_vertex_array(batch, type, attrib);
+   struct pan_ptr texcoord_buf_desc =
+      pan_pool_alloc_desc_array(&batch->pool.base, 1, BUFFER);
+   batch->fullscreen_texcoord_buf = texcoord_buf_desc.gpu;
+   panfrost_emit_ubo(texcoord_buf_desc.cpu, 0, texcoord_array.gpu,
+                     PAN_RUN_FULLSCREEN_ARRAY_SIZE);
+#endif
+
    /* Clear the dirty vertex flag to ensure the shader state update doesn't
     * emit any vertex info. */
    ctx->dirty &= ~PAN_DIRTY_VERTEX;
@@ -3722,6 +3722,9 @@ panfrost_draw_fullscreen(struct panfrost_context *ctx,
    panfrost_clean_state_3d(ctx);
 
    JOBX(launch_draw_fullscreen)(batch, type, attrib);
+
+   batch->fullscreen_texcoord_buf = 0;
+
    batch->draw_count++;
 }
 
@@ -3941,6 +3944,58 @@ panfrost_afbc_pack(struct panfrost_batch *batch, struct panfrost_resource *src,
 
    LAUNCH_AFBC_CONV_SHADER(pack, batch, src, consts, nr_sblocks);
 }
+
+#if PAN_ARCH >= 6
+static void
+panfrost_compute_copy_buffer(struct pipe_context *pctx,
+                             struct panfrost_resource *dst,
+                             unsigned dst_offset,
+                             struct panfrost_resource *src,
+                             unsigned src_offset, unsigned size)
+{
+   PAN_TRACE_FUNC(PAN_TRACE_GL_CMDSTREAM);
+
+   struct panfrost_context *ctx = pan_context(pctx);
+
+   uint64_t src_addr = src->plane.base + src_offset;
+   uint64_t dst_addr = dst->plane.base + dst_offset;
+
+   /* The caller guarantees at least 4-byte alignment of both offsets and the
+    * size, and buffer allocations are at least 4-byte aligned. */
+   assert((size % 4) == 0 && (src_addr % 4) == 0 && (dst_addr % 4) == 0);
+
+   /* The kernel copies PANLIB_COPY_MEM_CHUNK_SIZE bytes per thread plus an
+    * up-to-3 word tail, and each thread strides over the buffer, so a capped
+    * workgroup count still covers the whole copy. */
+   uint32_t chunks = DIV_ROUND_UP(size, PANLIB_COPY_MEM_CHUNK_SIZE);
+   uint32_t wgs = DIV_ROUND_UP(chunks, PANLIB_COPY_MEM_WG_SIZE);
+
+   /* Mirror panfrost_launch_grid's barrier semantics: flush pending work
+    * before and after so the copy is ordered against other batches. */
+   panfrost_flush_all_batches(ctx, "Compute buffer copy pre-barrier");
+
+   struct panfrost_batch *batch = panfrost_get_batch_for_fbo(ctx);
+
+   panfrost_batch_read_rsrc(batch, src, MESA_SHADER_COMPUTE);
+   panfrost_batch_write_rsrc(batch, dst, MESA_SHADER_COMPUTE);
+
+   /* PANLIB_BARRIER_JM_BARRIER only takes effect on the JM path (v6-v9);
+    * panfrost_launch_precomp ignores the barrier argument on CSF (v10+).
+    * Ordering against other batches is guaranteed on all archs by the
+    * panfrost_flush_all_batches() pre/post-barriers around this dispatch, so
+    * the copy is correct regardless of whether the flag is honored. */
+   panlib_copy_mem(batch, panlib_1d(wgs), PANLIB_BARRIER_JM_BARRIER, dst_addr,
+                   src_addr, size);
+
+   /* panfrost_launch_precomp only queues the job into the batch's job chain;
+    * the caller must account for the compute work so panfrost_batch_submit
+    * does not treat the batch as empty and skip it (mirrors what
+    * panfrost_launch_grid_on_batch does). */
+   batch->compute_count++;
+
+   panfrost_flush_all_batches(ctx, "Compute buffer copy post-barrier");
+}
+#endif
 
 static void
 panfrost_mtk_detile_compute(struct panfrost_context *ctx, struct pipe_blit_info *info)
@@ -4178,8 +4233,6 @@ panfrost_create_vertex_elements_state(struct pipe_context *pctx,
       so->element_buffer[i] = pan_assign_vertex_buffer(
          so->buffers, &so->nr_bufs, elements[i].vertex_buffer_index,
          elements[i].instance_divisor);
-      if (elements[i].instance_divisor)
-         so->attr_depends_on_base_instance_mask |= BITFIELD_BIT(i);
    }
 
    for (int i = 0; i < num_elements; ++i) {
@@ -4342,7 +4395,8 @@ panfrost_create_sampler_view(struct pipe_context *pctx,
       rzalloc(pctx, struct panfrost_sampler_view);
    struct panfrost_resource *ptexture = pan_resource(texture);
 
-   pan_legalize_format(ctx, ptexture, template->format, false, false);
+   pan_resource_modifier_legalize(ctx, ptexture, template->format, false,
+                                  false);
    pipe_reference(NULL, &texture->reference);
 
    so->base = *template;
@@ -4843,6 +4897,9 @@ GENX(panfrost_cmdstream_screen_init)(struct panfrost_screen *screen)
    screen->vtbl.afbc_size = panfrost_afbc_size;
    screen->vtbl.afbc_pack = panfrost_afbc_pack;
    screen->vtbl.mtk_detile = panfrost_mtk_detile_compute;
+#if PAN_ARCH >= 6
+   screen->vtbl.compute_copy_buffer = panfrost_compute_copy_buffer;
+#endif
    screen->vtbl.emit_write_timestamp = emit_write_timestamp;
    screen->vtbl.emit_trace_ts = emit_trace_ts;
 #if PAN_ARCH >= 10

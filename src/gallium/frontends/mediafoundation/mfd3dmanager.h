@@ -50,6 +50,7 @@
 #include "macros.h"
 
 #include "stats_buffer_manager.h"
+#include "d3d12_suballoc_mediabuffer_manager.h"
 
 // Use the Windows SDK dxcore include (e.g directx/dxcore uses DirectX-Headers)
 #include <dxcore.h>
@@ -157,6 +158,7 @@ class CMFD3DManager
    ComPtr<stats_buffer_manager> m_spBitsUsedStatsBufferPool;
    ComPtr<stats_buffer_manager> m_spQPMapStatsBufferPool;
    ComPtr<stats_buffer_manager> m_spReconstructedPictureBufferPool;
+   ComPtr<CD3D12BitstreamMFBufferManager> m_spD3D12BitstreamMFBufferManager;
 
    UINT32 m_uiResetToken = 0;
    HANDLE m_hDevice = NULL;

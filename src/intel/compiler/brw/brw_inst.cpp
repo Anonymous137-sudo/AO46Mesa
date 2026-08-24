@@ -801,6 +801,7 @@ brw_inst::is_commutative() const
    case SHADER_OPCODE_MULH:
       return true;
 
+   case BRW_OPCODE_MAC:
    case BRW_OPCODE_MUL:
       /* Integer multiplication of dword and word sources is not actually
        * commutative. The DW source must be first.
@@ -836,6 +837,7 @@ brw_inst::is_math() const
            opcode == SHADER_OPCODE_LOG2 ||
            opcode == SHADER_OPCODE_SIN ||
            opcode == SHADER_OPCODE_COS ||
+           opcode == SHADER_OPCODE_TANH ||
            opcode == SHADER_OPCODE_INT_QUOTIENT ||
            opcode == SHADER_OPCODE_INT_REMAINDER ||
            opcode == SHADER_OPCODE_POW);
@@ -941,6 +943,7 @@ brw_inst::can_do_saturate() const
    case BRW_OPCODE_SHL:
    case BRW_OPCODE_SHR:
    case SHADER_OPCODE_COS:
+   case SHADER_OPCODE_TANH:
    case SHADER_OPCODE_EXP2:
    case SHADER_OPCODE_LOG2:
    case SHADER_OPCODE_POW:

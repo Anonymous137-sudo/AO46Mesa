@@ -1342,22 +1342,37 @@ vir_get_max_temps(struct v3d_compile *c)
         vir_for_each_inst_inorder(inst, c)
                 max_ip++;
 
-        uint32_t *pressure = rzalloc_array(NULL, uint32_t, max_ip);
+        /* Count peak register pressure with a difference array instead of
+         * walking every temp's whole live range: +1 where a range starts and
+         * -1 just past where it ends, then a prefix sum gives the number of
+         * temps live at each ip.  The live range is the half-open
+         * [temp_start, temp_end) that interferes() uses, so a temp does not
+         * count at temp_end (its register is reused there); this reproduces
+         * the previous histogram's value exactly.
+         */
+        int *delta = rzalloc_array(NULL, int, max_ip + 1);
 
         for (int t = 0; t < c->num_temps; t++) {
-                for (int i = c->temp_start[t]; (i < c->temp_end[t] &&
-                                                i < max_ip); i++) {
-                        if (i > max_ip)
-                                break;
-                        pressure[i]++;
-                }
+                int start = c->temp_start[t];
+                if (start < 0 || start >= max_ip)
+                        continue;
+                int end = c->temp_end[t];
+                if (end > max_ip)
+                        end = max_ip;
+                if (end <= start)
+                        continue;
+                delta[start]++;
+                delta[end]--;
         }
 
         uint32_t max_temps = 0;
-        for (int i = 0; i < max_ip; i++)
-                max_temps = MAX2(max_temps, pressure[i]);
+        int live = 0;
+        for (int i = 0; i < max_ip; i++) {
+                live += delta[i];
+                max_temps = MAX2(max_temps, (uint32_t)live);
+        }
 
-        ralloc_free(pressure);
+        ralloc_free(delta);
 
         return max_temps;
 }

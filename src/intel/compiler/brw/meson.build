@@ -47,6 +47,7 @@ libintel_compiler_brw_files = files(
   'brw_nir_lower_cooperative_matrix.c',
   'brw_nir_lower_cs_intrinsics.c',
   'brw_nir_lower_alpha_to_coverage.c',
+  'brw_nir_lower_divergent_barriers.c',
   'brw_nir_lower_fs_barycentrics.c',
   'brw_nir_lower_fs_load_output.c',
   'brw_nir_lower_fully_covered.c',
@@ -136,7 +137,9 @@ libintel_compiler_brw = static_library(
   cpp_args : ['-Werror=vla'],
   gnu_symbol_visibility : 'hidden',
   link_with : libintel_compiler_nir,
-  dependencies : [idep_nir_headers, idep_mesautil, idep_intel_dev, idep_genxml, idep_vtn, idep_mda, idep_intel_compiler_gen],
+  dependencies : [idep_nir_headers, idep_mesautil, idep_libintel_common,
+                  idep_intel_dev, idep_genxml, idep_vtn, idep_mda,
+                  idep_intel_compiler_gen],
   build_by_default : false,
 )
 

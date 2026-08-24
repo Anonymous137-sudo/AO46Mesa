@@ -88,14 +88,6 @@ spec@egl 1.4@eglterminate then unbind context,Fail
 spec@egl_khr_gl_image@egl_khr_gl_renderbuffer_image-clear-shared-image gl_depth_component24,Fail
 spec@egl_khr_surfaceless_context@viewport,Fail
 spec@egl_mesa_configless_context@basic,Fail
-spec@ext_framebuffer_multisample@accuracy 16 srgb depthstencil,Fail
-spec@ext_framebuffer_multisample@accuracy 16 srgb depthstencil linear,Fail
-spec@ext_framebuffer_multisample@accuracy 16 srgb small depthstencil,Fail
-spec@ext_framebuffer_multisample@accuracy 16 srgb small depthstencil linear,Fail
-spec@ext_framebuffer_multisample@accuracy all_samples srgb depthstencil,Fail
-spec@ext_framebuffer_multisample@accuracy all_samples srgb depthstencil linear,Fail
-spec@ext_framebuffer_multisample@accuracy all_samples srgb small depthstencil,Fail
-spec@ext_framebuffer_multisample@accuracy all_samples srgb small depthstencil linear,Fail
 spec@ext_framebuffer_multisample@alpha-to-coverage-dual-src-blend 16,Fail
 spec@ext_framebuffer_multisample@alpha-to-coverage-dual-src-blend 6,Fail
 spec@ext_framebuffer_multisample@alpha-to-coverage-dual-src-blend 8,Fail
@@ -164,7 +156,6 @@ spec@ext_transform_feedback@tessellation triangle_strip monochrome,Fail
 spec@ext_transform_feedback@tessellation triangle_strip smooth,Fail
 spec@ext_transform_feedback@tessellation triangle_strip wireframe,Fail
 spec@glsl-1.20@execution@fs-underflow-mul-compare-zero,Fail
-spec@glsl-1.30@execution@clipping@fs-clip-distance-interpolated,Crash
 spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backcolor-flat-distance,Fail
 spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backcolor-flat-fixed,Fail
 spec@glsl-1.30@execution@interpolation@interpolation-noperspective-gl_backcolor-flat-none,Fail
@@ -289,62 +280,44 @@ spec@!opengl 3.1@primitive-restart-xfb written,Fail
 spec@!opengl es 3.0@gles-3.0-transform-feedback-uniform-buffer-object,Fail
 
 # uprev Piglit in Mesa
-afbcp-spec@arb_texture_view@tex-view,Fail
 KHR-GLES31.core.draw_indirect.advanced-twoPass-transformFeedback-arrays,Fail
 spec@!opengl 1.1@large-tex,Fail
-spec@arb_texture_view@tex-view,Fail
-spec@glsl-1.30@execution@glsl-packed-back-color,Fail
+spec@arb_framebuffer_object@framebuffer-blit-oblong tall,Fail
+spec@arb_framebuffer_object@framebuffer-blit-oblong wide,Fail
 
 # OpenCL (rusticl) failures
-api@clgetcommandqueueinfo,Fail
 api@clgetextensionfunctionaddressforplatform,Fail
-api@clgetkernelarginfo,Fail
 api@cllinkprogram,Fail
-api@clsetkernelarg,Fail
-api@clsetkernelarg@Input checks,Fail
 program@execute@builtin@builtin-float-nextafter-1.0.generated,Fail
 program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float1,Fail
 program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float16,Fail
 program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float2,Fail
 program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float4,Fail
 program@execute@builtin@builtin-float-nextafter-1.0.generated@nextafter float8,Fail
-program@execute@global-offset,Fail
-program@execute@global-offset@3d- input dependent,Fail
 program@execute@vector-conversion,Fail
 
 # OpenCL-CTS quick profile
-Compiler@unload_repeated,Fail
-Compiler@unload_compile_unload_link,Fail
-Compiler@unload_build_unload_create_kernel,Fail
-Compiler@unload_build_threaded,Fail
-Compiler,Fail
-Images (clFillImage max size)@1D,Fail
-# Caused by the outdated SPIR-V LLVM Translator in the test image
-Basic@work_item_functions_out_of_range,Fail
-Basic,Crash
-Images (clCopyImage max size),Fail
-Images (clCopyImage max size)@2D,Fail
-Images (clCopyImage max size)@2Darrayto2D,Fail
-Images (clCopyImage max size)@2Darrayto3D,Fail
-Images (clCopyImage max size)@2Dto2Darray,Fail
-Images (clCopyImage max size)@2Dto3D,Fail
-Images (clCopyImage max size)@3Dto2D,Fail
-Images (clCopyImage max size)@3Dto2Darray,Fail
-Math@ilogb,Fail
-Math,Crash
-Relationals,Crash
-Integer Ops,Crash
-Images (API Info),Fail
-Images (API Info)@1Darray,Fail
-Images (API Info)@2D,Fail
+Images (clCopyImage 1D),Fail
+Images (clCopyImage 1D)@1D,Fail
+Images (clCopyImage 1D)@1Darray,Fail
+Images (clCopyImage 2D),Crash
+Images (clCopyImage 2D)@2D,Fail
+Images (clCopyImage 2D)@2Darrayto2D,Fail
+Images (clCopyImage 2D)@2Darrayto3D,Fail
+Images (clCopyImage 2D)@2Dto2Darray,Fail
+Images (clCopyImage 2D)@2Dto3D,Fail
+Images (clCopyImage 3D),Fail
+Images (clCopyImage 3D)@3Dto2D,Fail
+Images (clCopyImage 3D)@3Dto2Darray,Fail
 
-# VKCTS 1.4.5.3 -> 1.4.6.1 uprev
-# [  254.111168] panthor fb000000.gpu: [drm] *ERROR* Unhandled Page fault in AS4 at VA 0x00007FFFFFFF9000
-# [  254.111168] raw fault status: 0x50002C3
-# [  254.111168] decoded fault status: SLAVE FAULT
-# [  254.111168] exception type 0xC3: TRANSLATION_FAULT_3
-dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_debug_utils,Crash
-dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_large2,Crash
-dEQP-VK.synchronization2.internally_synchronized_queues.bind_sparse_small2,Crash
-dEQP-VK.synchronization2.internally_synchronized_queues.xcb_bind_sparse_wsi,Crash
-dEQP-VK.synchronization2.internally_synchronized_queues.xlib_wsi_bind_sparse,Crash
+# Failing after updating SPIR-V LLVM Translator in the test image
+Basic@get_enqueued_local_size,Fail
+Basic@get_global_linear_id,Fail
+Basic@get_local_linear_id,Fail
+
+#
+# OpenCL-CTS uprev
+#
+
+Basic,Fail
+Basic@enqueue_map_image,Fail

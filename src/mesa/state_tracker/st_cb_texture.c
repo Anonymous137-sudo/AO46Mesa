@@ -1836,6 +1836,7 @@ fail:
                                ST_INVALIDATE_SAMPLE_MASK |
                                ST_INVALIDATE_SAMPLE_SHADING |
                                ST_INVALIDATE_FS_CONSTBUF0 |
+                               ST_INVALIDATE_FS_SAMPLER_VIEWS |
                                ST_INVALIDATE_VS_STATE |
                                ST_INVALIDATE_FS_STATE |
                                ST_INVALIDATE_GS_STATE |
@@ -2124,6 +2125,7 @@ fail:
                                ST_INVALIDATE_SAMPLE_MASK |
                                ST_INVALIDATE_SAMPLE_SHADING |
                                ST_INVALIDATE_FS_CONSTBUF0 |
+                               ST_INVALIDATE_FS_SAMPLER_VIEWS |
                                ST_INVALIDATE_FS_IMAGES |
                                ST_INVALIDATE_VS_STATE |
                                ST_INVALIDATE_FS_STATE |
@@ -3474,6 +3476,10 @@ st_texture_storage(struct gl_context *ctx,
    if (memObj) {
       memObj->TextureTiling = texObj->TextureTiling;
       bindings |= PIPE_BIND_SHARED;
+   } else {
+      if (ctx->Const.AllowGLTextureLinearTiling &&
+          texObj->TextureTiling == GL_LINEAR_TILING_EXT)
+         bindings |= PIPE_BIND_LINEAR;
    }
 
    if (texObj->IsProtected)

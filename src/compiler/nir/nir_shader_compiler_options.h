@@ -232,6 +232,13 @@ typedef enum {
     */
    nir_io_compact_to_higher_16 = BITFIELD_BIT(13),
 
+   /**
+    * Whether nir_opt_varyings should converge non-interpolated varyings to
+    * uint type instead of float. Some hardware may not preserve bit-exact
+    * representations of float varyings even when not interpolated.
+    */
+   nir_io_non_interpolated_as_uint = BITFIELD_BIT(14),
+
    /* Options affecting the GLSL compiler or Gallium are below. */
 
    /**
@@ -906,6 +913,9 @@ typedef struct nir_shader_compiler_options {
     * nir_lower_packing().
     */
    unsigned skip_lower_packing_ops;
+
+   /** Backend supports tanh. */
+   bool has_tanh;
 
    /** Driver callback where drivers can define how to lower mediump.
     *  Used by nir_lower_io_passes.

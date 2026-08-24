@@ -175,4 +175,42 @@ TEST_F(nir_opt_vectorize_test, iadd3_swapped_last_two_sources_do_not_vectorize)
    )"));
 }
 
+TEST_F(nir_opt_vectorize_test, combining_loop_phis_converges)
+{
+   nir_variable *out = nir_variable_create(b->shader, nir_var_shader_out,
+                                           glsl_uint_type(), "out");
+   nir_variable *sum = nir_local_variable_create(b->impl, glsl_uint_type(), "sum");
+   nir_variable *idx = nir_local_variable_create(b->impl, glsl_uint_type(), "idx");
+
+   nir_store_var(b, sum, nir_imm_int(b, 0), 0x1);
+   nir_store_var(b, idx, nir_imm_int(b, 0), 0x1);
+
+   /* Two scalar values carried around a loop become two scalar phis in the
+    * loop header, which the pass combines into one 2-component phi.
+    */
+   nir_loop *loop = nir_push_loop(b);
+   {
+      nir_def *cur_idx = nir_load_var(b, idx);
+      nir_def *cur_sum = nir_load_var(b, sum);
+
+      nir_push_if(b, nir_uge_imm(b, cur_idx, 4));
+      nir_jump(b, nir_jump_break);
+      nir_pop_if(b, NULL);
+
+      nir_store_var(b, sum, nir_iadd(b, cur_sum, cur_idx), 0x1);
+      nir_store_var(b, idx, nir_iadd_imm(b, cur_idx, 1), 0x1);
+   }
+   nir_pop_loop(b, loop);
+
+   nir_store_var(b, out, nir_load_var(b, sum), 0x1);
+
+   NIR_PASS(_, b->shader, nir_lower_vars_to_ssa);
+
+   ASSERT_TRUE(nir_opt_vectorize(b->shader, NULL, NULL));
+   nir_validate_shader(b->shader, NULL);
+
+   ASSERT_FALSE(nir_opt_vectorize(b->shader, NULL, NULL));
+   nir_validate_shader(b->shader, NULL);
+}
+
 } // namespace

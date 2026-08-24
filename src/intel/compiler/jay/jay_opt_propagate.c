@@ -210,6 +210,12 @@ propagate_forwards(jay_function *f)
                   &I->src[s] != jay_inst_get_default(I)) &&
                  !(I->src[s].file == UFLAG && !jay_is_imm(def->src[0])) &&
                  !(I->src[s].file == FLAG) &&
+                 !(I->predication &&
+                   jay_inst_get_predicate(I) == &I->src[s] &&
+                   !jay_is_flag(def->src[0])) &&
+                 !(I->op == JAY_OPCODE_SEL &&
+                   s == 2 &&
+                   !jay_is_flag(def->src[0])) &&
                  !(def->src[0].file == J_ARF && s != 0) &&
                  !(jay_is_imm(def->src[0]) && I->src[s].negate) &&
                  (jay_num_values(I->src[s]) == jay_num_values(def->src[0]) ||
@@ -279,7 +285,7 @@ propagate_fsat(jay_inst *I, jay_inst *fsat)
 static bool
 fuse_flag_op(jay_function *f, jay_inst *I, jay_inst *use, BITSET_WORD *defined)
 {
-   if (I->op != JAY_OPCODE_CMP ||
+   if (!jay_is_null(I->dst) ||
        !(use->op == JAY_OPCODE_AND || use->op == JAY_OPCODE_OR) ||
        use->type != JAY_TYPE_U1 ||
        (use->src[0].negate || use->src[1].negate)) {
@@ -297,7 +303,7 @@ fuse_flag_op(jay_function *f, jay_inst *I, jay_inst *use, BITSET_WORD *defined)
     * that means we ensure that `other` has NOT yet been defined when processing
     * I - because we propagate backwards.
     */
-   if (BITSET_TEST(defined, jay_index(other))) {
+   if (jay_is_imm(other) || BITSET_TEST(defined, jay_index(other))) {
       return false;
    }
 

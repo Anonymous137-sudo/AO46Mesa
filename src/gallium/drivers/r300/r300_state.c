@@ -447,6 +447,7 @@ static void* r300_create_blend_state(struct pipe_context* pipe,
     uint32_t alpha_blend_control_noalpha_noclamp = 0; /* R300_RB3D_ABLEND: 0x4e08 */
     uint32_t rop = 0;                 /* R300_RB3D_ROPCNTL: 0x4e18 */
     uint32_t dither = 0;              /* R300_RB3D_DITHER_CTL: 0x4e50 */
+    uint32_t masked_write_blend_control;
     int i;
 
     const unsigned eqRGB = state->rt[0].rgb_func;
@@ -462,6 +463,13 @@ static void* r300_create_blend_state(struct pipe_context* pipe,
     CB_LOCALS;
 
     blend->state = *state;
+    masked_write_blend_control =
+        R300_ALPHA_BLEND_ENABLE |
+        R300_READ_ENABLE |
+        (r300_translate_blend_factor(PIPE_BLENDFACTOR_ONE) <<
+         R300_SRC_BLEND_SHIFT) |
+        (r300_translate_blend_factor(PIPE_BLENDFACTOR_ZERO) <<
+         R300_DST_BLEND_SHIFT);
 
     /* force DST_ALPHA to ONE where we can */
     switch (srcRGBX) {
@@ -585,6 +593,15 @@ static void* r300_create_blend_state(struct pipe_context* pipe,
             OUT_CB_REG_SEQ(R300_RB3D_CBLEND, 3);
             OUT_CB(has_alpha ? blend_control : blend_control_noalpha);
             OUT_CB(has_alpha ? alpha_blend_control : alpha_blend_control_noalpha);
+            OUT_CB(func[i](state->rt[0].colormask));
+            OUT_CB_REG(R300_RB3D_DITHER_CTL, dither);
+            END_CB;
+
+            BEGIN_CB(blend->cb_clamp_masked_write[i], 8);
+            OUT_CB_REG(R300_RB3D_ROPCNTL, 0);
+            OUT_CB_REG_SEQ(R300_RB3D_CBLEND, 3);
+            OUT_CB(masked_write_blend_control);
+            OUT_CB(0);
             OUT_CB(func[i](state->rt[0].colormask));
             OUT_CB_REG(R300_RB3D_DITHER_CTL, dither);
             END_CB;
@@ -1275,6 +1292,8 @@ static void* r300_create_fs_state(struct pipe_context* pipe,
         /* R300/R400 can not do any kind of control flow, so abort early here. */
         if (!r300->screen->caps.is_r500) {
             char *msg = r300_check_control_flow(shader->ir.nir);
+            if (!msg)
+                msg = r300_check_fs_inputs(shader->ir.nir);
             if (msg && shader->report_compile_error) {
                 fprintf(stderr, "r300 FP: Compiler error: %s\n", msg);
                 ((struct pipe_shader_state *)shader)->error_message = strdup(msg);
@@ -2123,8 +2142,8 @@ static void r300_vertex_psc(struct r300_vertex_element_state *velems)
         swizzle = r300_translate_vertex_data_swizzle(format);
 
         if (i & 1) {
-            vstream->vap_prog_stream_cntl[i >> 1] |= type << 16;
-            vstream->vap_prog_stream_cntl_ext[i >> 1] |= (uint32_t)swizzle << 16;
+            vstream->vap_prog_stream_cntl[i >> 1] |= (uint32_t)(type) << 16;
+            vstream->vap_prog_stream_cntl_ext[i >> 1] |= (uint32_t)(swizzle) << 16;
         } else {
             vstream->vap_prog_stream_cntl[i >> 1] |= type;
             vstream->vap_prog_stream_cntl_ext[i >> 1] |= swizzle;

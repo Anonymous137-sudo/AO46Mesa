@@ -104,24 +104,25 @@ to_gen_operand(
    } else if (jay_is_null(d)) {
       R = gen_null();
    } else if (d.file == UGPR || (d.file == ACCUM && I->uniform)) {
-      grf += (reg / jay_ugpr_per_grf(f->shader));
-      offset_B = (reg % jay_ugpr_per_grf(f->shader)) * 4;
-
       if (d.file == UGPR) {
+         grf += (reg / jay_ugpr_per_grf(f->shader));
+         offset_B = (reg % jay_ugpr_per_grf(f->shader)) * 4;
          R = gen_grf(grf, 0);
       } else {
-         R = gen_accumulator(grf);
+         R = gen_accumulator(reg / 2);
       }
       R = gen_retype(gen_restride(R, 0, 1, 0), GEN_TYPE_UD);
 
       /* Handle 3-src restrictions and vectorized uniform code. */
-      if (is_dest ||
-          jay_num_values(d) > jay_type_vector_length(jay_src_type(I, idx))) {
+      if (is_dest || jay_num_values(d) > jay_type_vector_length(type)) {
          R = gen_restride(R, 2, 2, 1);
       }
 
-      /* Handle SIMD split of vectorized uniform code */
-      if (jay_num_values(d) > jay_type_vector_length(type) && I->uniform) {
+      /* Handle SIMD split of vectorized uniform code. The mov case comes up
+       * from the SEL_ACTIVE lowering for 64-bit code.
+       */
+      if (jay_num_values(d) > jay_type_vector_length(type) &&
+          (I->uniform || I->op == JAY_OPCODE_MOV)) {
          unsigned simd_width = jay_simd_width_physical(f->shader, I);
          uint32_t type_bits = jay_type_size_bits(type);
          unsigned stride_bits = type_bits;
@@ -205,11 +206,13 @@ to_gen_operand(
        * SIMD1 instructions and are never SIMD split.
        */
       assert(simd_offs == 0 || idx >= 0);
-      unsigned offs_B =
-         (d.reg * (f->shader->dispatch_width / 8)) + (hi ? 2 : 0);
+      unsigned flag_B = jay_type_size_bits(jay_flag_type(f)) / 8;
+      unsigned offs_B = (d.reg * flag_B) + (hi ? 2 : 0);
       R = gen_flag(offs_B / 2);
    } else if (d.file == J_ADDRESS) {
       R = gen_address(d.reg);
+   } else if (d.file == J_ARF && jay_base_index(d) == GEN_ARF_STATE) {
+      R = gen_arf(GEN_ARF_STATE, d.reg * 4);
    } else if (d.file == J_ARF) {
       R = gen_arf(jay_base_index(d), 0);
    } else {
@@ -256,9 +259,10 @@ static const struct {
    /* clang-format off */
    OP(ADD3, ADD3, 3),
    OP(ADD, ADD, 2),
+   OP(ADD_RTNE, ADD, 2),
    OP(AND, AND, 2),
    OP(AND_U32_U16, AND, 2),
-   OP(AND_S32_SN, AND, 2),
+   OP(AND_SN_S32, AND, 2),
    OP(ASR, ASR, 2),
    OP(AVG, AVG, 2),
    OP(BFE, BFE, 3),
@@ -292,7 +296,6 @@ static const struct {
    OP(LZD, LZD, 1),
    OP(MAC, MAC, 2),
    OP(MAD, MAD, 3),
-   OP(MAD_SWAP, MAD, 3),
    OP(MATH, MATH, 1),
    OP(MAX, SEL, 2),
    OP(MIN, SEL, 2),
@@ -465,7 +468,7 @@ emit(struct jay_codegen *jc,
 
    case JAY_OPCODE_RELOC: {
       util_dynarray_append(&jc->relocs,
-                           ((struct intel_shader_reloc) {
+                           ((struct intel_shader_reloc){
                               .id = jay_reloc_param(I),
                               .type = INTEL_SHADER_RELOC_TYPE_MOV_IMM,
                               .offset = GEN_INST_BYTES * (jc->num_insts - 1),
@@ -563,7 +566,7 @@ emit(struct jay_codegen *jc,
       break;
 
    case JAY_OPCODE_LANE_ID_8:
-      gen->src[0] = gen_imm_uv(0x76543210);
+      gen->src[0] = gen_imm_uv(0x76543210 + 0x11111111 * jay_lane_id_8_base(I));
       break;
 
    case JAY_OPCODE_ZIP_UGPR16:
@@ -588,6 +591,7 @@ emit(struct jay_codegen *jc,
       } else {
          gen->swsb = gen_swsb_null();
          gen->opcode = jay_mul_32_high(I) ? GEN_OP_MACH : GEN_OP_MACL;
+         gen->acc_wr_control = jc->devinfo->ver < 20;
       }
       break;
 
@@ -705,7 +709,7 @@ emit(struct jay_codegen *jc,
 
    static_assert(GEN_OP_ILLEGAL == 0);
    if (!gen->opcode) {
-      jay_print_inst(stderr, (jay_inst *) I);
+      jay_print_inst(stderr, NULL, (jay_inst *) I, NULL);
       UNREACHABLE("Unhandled opcode");
    }
 }

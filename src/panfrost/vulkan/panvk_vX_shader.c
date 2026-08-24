@@ -16,6 +16,7 @@
 #include "panvk_device.h"
 #include "panvk_instance.h"
 #include "panvk_mempool.h"
+#include "panvk_nir.h"
 #include "panvk_physical_device.h"
 #include "panvk_sampler.h"
 #include "panvk_shader.h"
@@ -96,7 +97,7 @@ panvk_lower_sysvals(nir_builder *b, nir_instr *instr, void *data)
       break;
 
 #if PAN_ARCH < 9
-   case nir_intrinsic_load_raw_vertex_offset_pan:
+   case nir_intrinsic_load_raw_vertex_offset:
       val = load_sysval(b, graphics, bit_size, vs.raw_vertex_offset);
       break;
    case nir_intrinsic_load_layer_id:
@@ -109,6 +110,29 @@ panvk_lower_sysvals(nir_builder *b, nir_instr *instr, void *data)
          val = nir_imm_zero(b, 1, 32);
       else
          val = load_sysval(b, graphics, bit_size, layer_id);
+      break;
+#else
+   case nir_intrinsic_load_view_index:
+      if (ctx->state->mv->view_mask == 0) {
+         val = nir_imm_zero(b, 1, 32);
+         break;
+      } else if (b->shader->info.stage == MESA_SHADER_VERTEX) {
+         /* On v14+ we have real multiview and view_index comes from a preload
+          * in the vertex stage.  On earlier generations, view_index in vertex
+          * shaders gets lowered away by nir_lower_multiview() so we should
+          * never see it here.
+          */
+         assert(PAN_ARCH >= 14);
+         return false;
+      }
+
+      /* For fragment shaders, it's the same as layer_id */
+      assert(b->shader->info.stage == MESA_SHADER_FRAGMENT);
+      FALLTHROUGH;
+
+   case nir_intrinsic_load_layer_id:
+      val = nir_load_frame_arg_pan(b);
+      val = nir_extract_u8_imm(b, nir_u2u32(b, val), 0);
       break;
 #endif
 
@@ -192,29 +216,6 @@ panvk_lower_sysvals(nir_builder *b, nir_instr *instr, void *data)
 
    b->cursor = nir_after_instr(instr);
    nir_def_rewrite_uses(&intr->def, val);
-   return true;
-}
-
-static bool
-panvk_lower_load_vs_input(nir_builder *b, nir_intrinsic_instr *intrin,
-                           UNUSED void *data)
-{
-   if (intrin->intrinsic != nir_intrinsic_load_input)
-      return false;
-
-   b->cursor = nir_before_instr(&intrin->instr);
-   nir_def *ld_attr = nir_load_attribute_pan(
-      b, intrin->def.num_components, intrin->def.bit_size,
-      PAN_ARCH < 9 ?
-         nir_load_raw_vertex_id_pan(b) :
-         nir_load_vertex_id(b),
-      nir_load_instance_id(b),
-      nir_get_io_offset_src(intrin)->ssa,
-      .base = nir_intrinsic_base(intrin),
-      .component = nir_intrinsic_component(intrin),
-      .dest_type = nir_intrinsic_dest_type(intrin));
-   nir_def_replace(&intrin->def, ld_attr);
-
    return true;
 }
 
@@ -834,6 +835,12 @@ panvk_lower_nir(struct panvk_device *dev, nir_shader *nir,
 {
    mesa_shader_stage stage = nir->info.stage;
 
+   /* Run before descriptor and explicit-IO lowering so the memory derefs this
+    * pass emits get lowered by them.
+    */
+   NIR_PASS(_, nir, panvk_nir_lower_cooperative_matrix,
+            pan_subgroup_size(PAN_ARCH));
+
    const nir_opt_access_options access_options = {
       .is_vulkan = true,
    };
@@ -973,6 +980,8 @@ panvk_lower_nir_io(nir_shader *nir)
     * instructions.
     */
    NIR_PASS(_, nir, nir_opt_constant_folding);
+
+   pan_nir_lower_mediump_io(nir);
 }
 
 static VkResult
@@ -989,10 +998,6 @@ panvk_compile_nir(struct panvk_device *dev, nir_shader *nir,
 
    /* We're going to modify this so make our own copy to be nicer to callers */
    struct pan_compile_inputs input = *compile_input;
-
-   if (nir->info.stage == MESA_SHADER_VERTEX)
-      NIR_PASS(_, nir, nir_shader_intrinsics_pass, panvk_lower_load_vs_input,
-               nir_metadata_control_flow, NULL);
 
    pan_postprocess_nir(nir, &input, &shader->info);
 
@@ -1440,12 +1445,9 @@ panvk_compile_shader(struct panvk_device *dev,
          /* This somehow folds the location for multi-slot nir_load/nir_store */
          NIR_PASS(_, nir, nir_opt_constant_folding);
 
-         inputs.trust_varying_flat_highp_types = true;
          struct pan_varying_layout varying_layout;
          if (v == PANVK_VS_VARIANT_HW) {
-            pan_varying_collect_formats(&varying_layout, nir, inputs.gpu_id,
-                                        inputs.trust_varying_flat_highp_types,
-                                        true);
+            pan_varying_collect_formats(&varying_layout, nir, inputs.gpu_id);
             pan_build_varying_layout_compact(&varying_layout, nir,
                                              inputs.gpu_id);
             inputs.varying_layout = &varying_layout;
@@ -1506,7 +1508,8 @@ panvk_compile_shader(struct panvk_device *dev,
        * to a driver-provided FAU instead of using the blend descriptors
        * uploaded by the hardware.  See panvk_vX_blend.c for details.
        */
-      NIR_PASS(_, nir, pan_nir_lower_fs_outputs, false);
+      NIR_PASS(_, nir, pan_nir_lower_fs_outputs, false,
+               0 /* fragcolor_nr_cbufs */);
 
       variant->own_bin = true;
 

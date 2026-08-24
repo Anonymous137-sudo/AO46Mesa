@@ -2005,6 +2005,15 @@ nir_store_deref(nir_builder *build, nir_deref_instr *deref,
                                (enum gl_access_qualifier)0);
 }
 
+static inline nir_def *
+nir_atomic_deref(nir_builder *build, unsigned bit_size,
+                 nir_deref_instr *deref,
+                 nir_def *value, nir_atomic_op op)
+{
+   return nir_deref_atomic(build, bit_size, &deref->def, value,
+                           (enum gl_access_qualifier)0, op);
+}
+
 static inline void
 nir_build_write_masked_store(nir_builder *b, nir_deref_instr *vec_deref,
                              nir_def *value, unsigned component)
@@ -2075,6 +2084,12 @@ nir_memcpy_deref(nir_builder *build, nir_deref_instr *dest,
 }
 
 static inline nir_def *
+nir_load_struct_field(nir_builder *build, nir_deref_instr *deref, int field)
+{
+   return nir_load_deref(build, nir_build_deref_struct(build, deref, field));
+}
+
+static inline nir_def *
 nir_load_var(nir_builder *build, nir_variable *var)
 {
    return nir_load_deref(build, nir_build_deref_var(build, var));
@@ -2085,6 +2100,14 @@ nir_store_var(nir_builder *build, nir_variable *var, nir_def *value,
               unsigned writemask)
 {
    nir_store_deref(build, nir_build_deref_var(build, var), value, writemask);
+}
+
+static inline nir_def *
+nir_atomic_var(nir_builder *build, nir_variable *var, nir_def *value,
+               nir_atomic_op op)
+{
+   return nir_atomic_deref(build, glsl_get_bit_size(var->type),
+                           nir_build_deref_var(build, var), value, op);
 }
 
 static inline void
@@ -2329,6 +2352,16 @@ nir_break_if(nir_builder *build, nir_def *cond)
    nir_if *nif = nir_push_if(build, cond);
    {
       nir_jump(build, nir_jump_break);
+   }
+   nir_pop_if(build, nif);
+}
+
+static inline void
+nir_halt_if(nir_builder *build, nir_def *cond)
+{
+   nir_if *nif = nir_push_if(build, cond);
+   {
+      nir_jump(build, nir_jump_halt);
    }
    nir_pop_if(build, nif);
 }

@@ -129,6 +129,7 @@ anv_device_init_blorp(struct anv_device *device)
       .use_unrestricted_depth_range =
          device->vk.enabled_extensions.EXT_depth_range_unrestricted,
       .use_cached_dynamic_states = true,
+      .enable_tbimr = device->physical->drirc.debug.tbimr,
    };
 
    blorp_init_brw(&device->blorp.context, device, &device->isl_dev,
@@ -136,7 +137,6 @@ anv_device_init_blorp(struct anv_device *device)
    device->blorp.context.get_fp64_nir = get_fp64_nir;
    device->blorp.context.lookup_shader = lookup_blorp_shader;
    device->blorp.context.upload_shader = upload_blorp_shader;
-   device->blorp.context.enable_tbimr = device->physical->instance->drirc.debug.tbimr;
    device->blorp.context.get_surface_address = blorp_get_surface_address;
    device->blorp.context.exec = anv_genX(device->info, blorp_exec);
    device->blorp.context.upload_dynamic_state = upload_dynamic_state;
@@ -184,7 +184,7 @@ anv_blorp_batch_init(struct anv_cmd_buffer *cmd_buffer,
     */
    flags |= BLORP_BATCH_EMIT_3DSTATE_VF;
 
-   if (!cmd_buffer->device->physical->instance->drirc.debug.vf_distribution)
+   if (!cmd_buffer->device->physical->drirc.debug.vf_distribution)
       flags |= BLORP_BATCH_DISABLE_VF_DISTRIBUTION;
 
    blorp_batch_init(&cmd_buffer->device->blorp.context, batch, cmd_buffer, flags);
@@ -904,9 +904,10 @@ void anv_CmdCopyMemoryToImageKHR(
       if (dst_image->emu_plane_format != VK_FORMAT_UNDEFINED) {
          assert(!anv_cmd_buffer_is_blitter_queue(cmd_buffer));
          const enum anv_pipe_bits pipe_bits =
-            anv_cmd_buffer_is_compute_queue(cmd_buffer) ?
-            ANV_PIPE_HDC_PIPELINE_FLUSH_BIT :
-            ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT;
+	    ANV_PIPE_TEXTURE_CACHE_INVALIDATE_BIT |
+            (anv_cmd_buffer_is_compute_queue(cmd_buffer) ?
+             ANV_PIPE_HDC_PIPELINE_FLUSH_BIT :
+             ANV_PIPE_RENDER_TARGET_CACHE_FLUSH_BIT);
          anv_add_pending_pipe_bits(cmd_buffer,
                                    (batch.flags & BLORP_BATCH_USE_COMPUTE) ?
                                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT :
@@ -1417,19 +1418,9 @@ void anv_CmdFillMemoryKHR(
 {
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
 
-   /* From the Vulkan spec:
-    *
-    *    "size is the number of bytes to fill, and must be either a multiple
-    *    of 4, or VK_WHOLE_SIZE to fill the range from offset to the end of
-    *    the buffer. If VK_WHOLE_SIZE is used and the remaining size of the
-    *    buffer is not a multiple of 4, then the nearest smaller multiple is
-    *    used."
-    */
-   const VkDeviceSize size = pDstRange->size & ~3ull;
-
    anv_cmd_buffer_fill_area(cmd_buffer,
                             anv_address_from_range_flags(*pDstRange, dstFlags),
-                            size, data);
+                            pDstRange->size, data);
 
    anv_add_buffer_write_pending_bits(cmd_buffer, "after fill buffer");
 

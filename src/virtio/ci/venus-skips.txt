@@ -52,6 +52,7 @@ dEQP-VK.ray_tracing_pipeline.build.gpu.level_instances.triangles_65536_1_1
 dEQP-VK.ray_tracing_pipeline.misc.cullmask_AABB_extrabits
 dEQP-VK.ray_tracing_pipeline.misc.cullmask_tri
 dEQP-VK.ray_tracing_pipeline.misc.recursiveTraces_tri_15
+dEQP-VK.ray_tracing_pipeline.trace_rays_cmds.indirect_gpu.11_13_5
 dEQP-VK.ray_tracing_pipeline.trace_rays_cmds_maintenance_1.indirect2_cpu.11_13_5
 dEQP-VK.ray_tracing_pipeline.watertightness.closedFan2.1024
 

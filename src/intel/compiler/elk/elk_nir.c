@@ -989,6 +989,9 @@ elk_preprocess_nir(const struct elk_compiler *compiler, nir_shader *nir,
    if (compiler->precise_trig)
       OPT(elk_nir_apply_trig_workarounds);
 
+   if (compiler->limit_trig_input_range)
+      OPT(elk_nir_limit_trig_input_range_workaround);
+
    /* This workaround existing for performance reasons. Since it requires not
     * setting RENDER_SURFACE_STATE::SurfaceArray when the array length is 1,
     * we're loosing the HW robustness feature in that case.
@@ -1739,9 +1742,6 @@ elk_nir_apply_key(nir_shader *nir,
       .lower_subgroup_masks = true,
    };
    OPT(nir_lower_subgroups, &subgroups_options);
-
-   if (key->limit_trig_input_range)
-      OPT(elk_nir_limit_trig_input_range_workaround);
 
    if (progress) {
       const bool is_scalar = compiler->scalar_stage[nir->info.stage];

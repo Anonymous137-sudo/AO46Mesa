@@ -53,9 +53,6 @@ def declare_options(android_version):
         F("lower_depth_range_rate", 1.0, 0.0, 1.0,
           "Lower depth range for fixing misrendering issues due to z coordinate float point interpolation accuracy",
           c_name="lower_depth_range_rate"),
-        B("force_indirect_descriptors", False,
-          "Use an indirection to access buffer/image/texture/sampler handles",
-          c_name="force_indirect_descriptors"),
         B("limit_trig_input_range", False,
           "Limit trig input range to [-2p : 2p] to improve sin/cos calculation precision on Intel",
           c_name="limit_trig_input_range"),
@@ -77,6 +74,12 @@ def declare_options(android_version):
         B("anv_xe2_r11g11b10_atomic_swap_wa", True,
           "Enable workaround for apps using atomic swaps on R11G11B10 images",
           c_name="r11g11b10_atomic_swap_wa"),
+        B("anv_emulate_active_thread_barriers", True,
+          "Emulates Xe2+ active thread barriers on Gfx125 and below",
+          c_name="emulate_active_thread_barriers"),
+        B("anv_emulate_divergent_barriers", False,
+          "Temporary workaround for a broken shader in some recent RE engine games",
+          c_name="emulate_divergent_barriers"),
 
         # Workaround various driver
         B("always_flush_cache", False,
@@ -84,9 +87,6 @@ def declare_options(android_version):
         B("anv_force_filter_addr_rounding", False,
           "Force min/mag filter address rounding to be enabled even for NEAREST sampling",
           c_name="force_filter_addr_rounding"),
-        B("anv_enable_buffer_comp", False,
-          "Enable CCS on buffers where possible",
-          c_name="enable_buffer_comp"),
         B("anv_external_memory_implicit_sync", False,
           "Implicit sync on external BOs",
           c_name="external_memory_implicit_sync"),
@@ -102,6 +102,9 @@ def declare_options(android_version):
         B("custom_border_colors_without_format", android_version == 0,
           "Enable custom border colors without format",
           c_name="custom_border_colors_without_format"),
+        B("force_indirect_descriptors", False,
+          "Use an indirection to access buffer/image/texture/sampler handles",
+          c_name="force_indirect_descriptors"),
         B("intel_sampler_route_to_lsc", False,
           "Specific toggle to enable sampler route to LSC",
           c_name="sampler_route_to_lsc"),
@@ -150,6 +153,8 @@ def declare_options(android_version):
         B("brw_prefer_simd32_fs", False,
           "Keep this fragment shader's SIMD32 variant even if the throughput "
           "model ties it"),
+        B("anv_xe2_force_simd32_cs", False,
+          "Force this compute shader to dispatch at SIMD32 (Xe2+ only)"),
     ]
 
     perf_options = [
@@ -168,6 +173,10 @@ def declare_options(android_version):
         I("query_copy_with_shader_threshold", 6, 0, 0x7fffffff,
           "Query threshold count above which query copies are executed with a shader",
           c_name="query_copy_with_shader_threshold"),
+
+        B("anv_enable_alloc_oversubscription", True,
+          "Allow the optional alignment of allocation sizes to large page sizes",
+          c_name="alloc_oversubscription"),
 
         B("anv_disable_push_constant_alloc", True,
           "Disable push constant space allocations",
@@ -212,6 +221,9 @@ def declare_options(android_version):
            EV(2048, "2048 stackids")],
           "Control the number stackIDs (i.e. number of unique rays in the RT subsytem)",
           c_name="stack_ids"),
+        B("anv_dynamic_stack_id_control", False,
+          "Enable Xe3 dynamic StackID control for ray tracing dispatches",
+          c_name="dynamic_stack_id_control"),
         E("anv_rt_dispatch_timeout", 512, 64, 4096,
           [EV(64,    "64 clocks"),
            EV(128,   "128 clocks"),

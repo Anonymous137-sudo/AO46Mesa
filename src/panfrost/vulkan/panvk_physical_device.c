@@ -35,6 +35,7 @@
 #include "panvk_wsi.h"
 
 #include "pan_afbc.h"
+#include "pan_compiler.h"
 #include "pan_props.h"
 
 #include "genxml/gen_macros.h"
@@ -165,16 +166,17 @@ init_shader_caches(struct panvk_physical_device *device,
    memcpy(device->cache_uuid, blake3, VK_UUID_SIZE);
 
 #ifdef ENABLE_SHADER_CACHE
+   const uint64_t gpu_id = device->kmod.dev->props.gpu_id;
+
    char renderer[25];
    ASSERTED int len =
-      snprintf(renderer, sizeof(renderer), "panvk_0x%016" PRIx64,
-               device->kmod.dev->props.gpu_id);
+      snprintf(renderer, sizeof(renderer), "panvk_0x%016" PRIx64, gpu_id);
    assert(len == sizeof(renderer) - 1);
 
    char timestamp[BLAKE3_HEX_LEN];
    _mesa_blake3_format(timestamp, instance->driver_build_sha);
 
-   const uint64_t driver_flags = 0;
+   const uint64_t driver_flags = pan_get_compiler_flags(pan_arch(gpu_id));
    device->vk.disk_cache = disk_cache_create(renderer, timestamp, driver_flags);
 #endif
 }
@@ -559,7 +561,10 @@ panvk_GetPhysicalDeviceQueueFamilyProperties2(
    const VkQueueFamilyProperties qfamily_props[PANVK_QUEUE_FAMILY_COUNT] = {
       [PANVK_QUEUE_FAMILY_GPU] = {
          .queueFlags =
-            VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT,
+            VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT |
+            (physical_device->vk.supported_features.sparseBinding
+                ? VK_QUEUE_SPARSE_BINDING_BIT
+                : 0),
          /* On v10+ we can support up to 127 queues but this causes timeout on
             some CTS tests */
          .queueCount = arch >= 10 ? 2 : 1,
@@ -592,6 +597,113 @@ panvk_GetPhysicalDeviceQueueFamilyProperties2(
    }
 }
 
+VKAPI_ATTR VkResult VKAPI_CALL
+panvk_GetPhysicalDeviceCooperativeMatrixPropertiesKHR(
+   VkPhysicalDevice physicalDevice, uint32_t *pPropertyCount,
+   VkCooperativeMatrixPropertiesKHR *pProperties)
+{
+   VK_FROM_HANDLE(panvk_physical_device, physical_device, physicalDevice);
+   VK_OUTARRAY_MAKE_TYPED(VkCooperativeMatrixPropertiesKHR, out, pProperties,
+                          pPropertyCount);
+
+   unsigned arch = pan_arch(physical_device->kmod.dev->props.gpu_id);
+
+   if (arch < 11)
+      return VK_SUCCESS;
+
+   vk_outarray_append_typed(VkCooperativeMatrixPropertiesKHR, &out, p) {
+      *p = (VkCooperativeMatrixPropertiesKHR){
+         .sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR,
+         .MSize = 4,
+         .NSize = 4,
+         .KSize = 4,
+         .AType = VK_COMPONENT_TYPE_FLOAT32_KHR,
+         .BType = VK_COMPONENT_TYPE_FLOAT32_KHR,
+         .CType = VK_COMPONENT_TYPE_FLOAT32_KHR,
+         .ResultType = VK_COMPONENT_TYPE_FLOAT32_KHR,
+         .saturatingAccumulation = false,
+         .scope = VK_SCOPE_SUBGROUP_KHR,
+      };
+   }
+
+   vk_outarray_append_typed(VkCooperativeMatrixPropertiesKHR, &out, p) {
+      *p = (VkCooperativeMatrixPropertiesKHR){
+         .sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR,
+         .MSize = 16,
+         .NSize = 16,
+         .KSize = 16,
+         .AType = VK_COMPONENT_TYPE_FLOAT32_KHR,
+         .BType = VK_COMPONENT_TYPE_FLOAT32_KHR,
+         .CType = VK_COMPONENT_TYPE_FLOAT32_KHR,
+         .ResultType = VK_COMPONENT_TYPE_FLOAT32_KHR,
+         .saturatingAccumulation = false,
+         .scope = VK_SCOPE_SUBGROUP_KHR,
+      };
+   }
+
+   vk_outarray_append_typed(VkCooperativeMatrixPropertiesKHR, &out, p) {
+      *p = (VkCooperativeMatrixPropertiesKHR){
+         .sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR,
+         .MSize = 4,
+         .NSize = 8,
+         .KSize = 8,
+         .AType = VK_COMPONENT_TYPE_FLOAT16_KHR,
+         .BType = VK_COMPONENT_TYPE_FLOAT16_KHR,
+         .CType = VK_COMPONENT_TYPE_FLOAT32_KHR,
+         .ResultType = VK_COMPONENT_TYPE_FLOAT32_KHR,
+         .saturatingAccumulation = false,
+         .scope = VK_SCOPE_SUBGROUP_KHR,
+      };
+   }
+
+   vk_outarray_append_typed(VkCooperativeMatrixPropertiesKHR, &out, p) {
+      *p = (VkCooperativeMatrixPropertiesKHR){
+         .sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR,
+         .MSize = 16,
+         .NSize = 32,
+         .KSize = 32,
+         .AType = VK_COMPONENT_TYPE_FLOAT16_KHR,
+         .BType = VK_COMPONENT_TYPE_FLOAT16_KHR,
+         .CType = VK_COMPONENT_TYPE_FLOAT32_KHR,
+         .ResultType = VK_COMPONENT_TYPE_FLOAT32_KHR,
+         .saturatingAccumulation = false,
+         .scope = VK_SCOPE_SUBGROUP_KHR,
+      };
+   }
+
+   vk_outarray_append_typed(VkCooperativeMatrixPropertiesKHR, &out, p) {
+      *p = (VkCooperativeMatrixPropertiesKHR){
+         .sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR,
+         .MSize = 4,
+         .NSize = 16,
+         .KSize = 16,
+         .AType = VK_COMPONENT_TYPE_SINT8_KHR,
+         .BType = VK_COMPONENT_TYPE_SINT8_KHR,
+         .CType = VK_COMPONENT_TYPE_SINT32_KHR,
+         .ResultType = VK_COMPONENT_TYPE_SINT32_KHR,
+         .saturatingAccumulation = false,
+         .scope = VK_SCOPE_SUBGROUP_KHR,
+      };
+   }
+
+   vk_outarray_append_typed(VkCooperativeMatrixPropertiesKHR, &out, p) {
+      *p = (VkCooperativeMatrixPropertiesKHR){
+         .sType = VK_STRUCTURE_TYPE_COOPERATIVE_MATRIX_PROPERTIES_KHR,
+         .MSize = 4,
+         .NSize = 16,
+         .KSize = 16,
+         .AType = VK_COMPONENT_TYPE_UINT8_KHR,
+         .BType = VK_COMPONENT_TYPE_UINT8_KHR,
+         .CType = VK_COMPONENT_TYPE_UINT32_KHR,
+         .ResultType = VK_COMPONENT_TYPE_UINT32_KHR,
+         .saturatingAccumulation = false,
+         .scope = VK_SCOPE_SUBGROUP_KHR,
+      };
+   }
+
+   return vk_outarray_status(&out);
+}
+
 VKAPI_ATTR void VKAPI_CALL
 panvk_GetPhysicalDeviceMemoryProperties2(
    VkPhysicalDevice physicalDevice,
@@ -613,10 +725,10 @@ panvk_GetPhysicalDeviceMemoryProperties2(
           physical_device->memory.types[i];
    }
 
-   vk_foreach_struct(ext, pMemoryProperties->pNext) {
-      switch (ext->sType) {
+   vk_foreach_struct(sType, ext, pMemoryProperties->pNext) {
+      switch (sType) {
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT: {
-         VkPhysicalDeviceMemoryBudgetPropertiesEXT *p = (void *)ext;
+         VkPhysicalDeviceMemoryBudgetPropertiesEXT *p = ext;
 
          uint64_t used = p_atomic_read(&physical_device->memory.heap_used);
          uint64_t heap_size = physical_device->memory.heaps[0].size;
@@ -649,7 +761,7 @@ panvk_GetPhysicalDeviceMemoryProperties2(
          break;
       }
       default:
-         vk_debug_ignored_stype(ext->sType);
+         vk_debug_ignored_stype(sType);
          break;
       }
    }
@@ -1409,16 +1521,16 @@ panvk_GetPhysicalDeviceImageFormatProperties2(
       return result;
 
    /* Extract input structs */
-   vk_foreach_struct_const(s, base_info->pNext) {
-      switch (s->sType) {
+   vk_foreach_struct_const(sType, s, base_info->pNext) {
+      switch (sType) {
       case VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO:
-         stencil_usage_info = (const void*)s;
+         stencil_usage_info = s;
          break;
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO:
-         external_info = (const void *)s;
+         external_info = s;
          break;
       case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_VIEW_IMAGE_FORMAT_INFO_EXT:
-         image_view_info = (const void *)s;
+         image_view_info = s;
          break;
       default:
          break;
@@ -1426,19 +1538,19 @@ panvk_GetPhysicalDeviceImageFormatProperties2(
    }
 
    /* Extract output structs */
-   vk_foreach_struct(s, base_props->pNext) {
-      switch (s->sType) {
+   vk_foreach_struct(sType, s, base_props->pNext) {
+      switch (sType) {
       case VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES:
-         external_props = (void *)s;
+         external_props = s;
          break;
       case VK_STRUCTURE_TYPE_FILTER_CUBIC_IMAGE_VIEW_IMAGE_FORMAT_PROPERTIES_EXT:
-         cubic_props = (void *)s;
+         cubic_props = s;
          break;
       case VK_STRUCTURE_TYPE_HOST_IMAGE_COPY_DEVICE_PERFORMANCE_QUERY:
-         hic_props = (void *)s;
+         hic_props = s;
          break;
       case VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_IMAGE_FORMAT_PROPERTIES:
-         ycbcr_props = (void *)s;
+         ycbcr_props = s;
          break;
       default:
          break;

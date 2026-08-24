@@ -9,8 +9,10 @@ import apiexec
 import gl_XML
 import license
 
+from collections import defaultdict
 
 TRACE_ARRAY_BUFSZ = 512
+TRACE_BITFIELD_BUFSZ = 512
 
 
 header = """
@@ -116,6 +118,9 @@ def classify_param(p):
     opaque = ('opaque', '%p', '(void *){0}'.format(p.name))
 
     if not p.is_pointer():
+        if p.type_string().strip() == 'GLbitfield' and p.group:
+            return ('bitfield', '%s', p.group, p.name)
+
         ts = TYPE_ALIASES.get(p.type_string().strip(), p.type_string().strip())
         if ts in TYPE_FORMAT:
             spec, expr = TYPE_FORMAT[ts]
@@ -155,6 +160,33 @@ class PrintCode(gl_XML.gl_print_base):
     def printRealFooter(self):
         pass
 
+    def print_bitfield_helpers(self, api):
+
+        # prepare list of bitfield-groups
+        groups = defaultdict(list)
+        for e in api.enums_by_name.values():
+            for g in e.group:
+                groups[g].append((e.value, e.name))
+
+        for group_name, enums in groups.items():
+            # sort from largest bitmask value to smallest to prefer
+            # composite enums (e.g GL_ALL_ATTRIB_BITS)
+            enums.sort(key=lambda x: x[0], reverse=True)
+
+            print('static void')
+            print('_mesa_trace_format_bitfield_group_{0}(char *buf, size_t buflen, GLbitfield mask)'.format(group_name))
+            print('{')
+            print('   static const char *enum_names[] = {')
+            print('      {0}'.format(', '.join('"{0}"'.format(enum[1]) for enum in enums)))
+            print('   };')
+            print('   static const unsigned enum_values[] = {')
+            print('      {0}'.format(', '.join('{0}u'.format(enum[0]) for enum in enums)))
+            print('   };')
+            print('   _mesa_trace_format_bitfield_group(buf, buflen, enum_names, enum_values, {0}, mask);'.format(len(enums)))
+            print('}')
+            print('')
+
+
     def print_wrapper(self, f):
         params = [p for p in f.parameters if not p.is_padding]
         classified = [classify_param(p) for p in params]
@@ -163,7 +195,17 @@ class PrintCode(gl_XML.gl_print_base):
         args = []
         prelude = []
         for p, c in zip(params, classified):
-            if c[0] == 'array':
+            if c[0] == 'bitfield':
+                _, _, group_name, name = c
+                buf_name = '{0}_buf'.format(name)
+                prelude.append('char {buf}[{sz}];'.format(buf=buf_name, sz=TRACE_BITFIELD_BUFSZ))
+                prelude.append(
+                    '_mesa_trace_format_bitfield_group_{group}({buf}, sizeof({buf}), {name});'
+                    .format(group=group_name, buf=buf_name, name=name)
+                )
+                specs.append('%s')
+                args.append(buf_name)
+            elif c[0] == 'array':
                 _, kind, count_expr, name = c
                 buf_name = '{0}_buf'.format(name)
                 prelude.append('char {buf}[{sz}];'
@@ -221,6 +263,7 @@ class PrintCode(gl_XML.gl_print_base):
         print('}')
 
     def printBody(self, api):
+        self.print_bitfield_helpers(api)
         functions = list(api.functionIterateByOffset())
         for f in functions:
             self.print_wrapper(f)

@@ -474,3 +474,51 @@ nir_get_texture_lod(nir_builder *b, nir_tex_instr *tex)
    /* The LOD is the y component of the result */
    return nir_channel(b, tql, 1);
 }
+
+nir_def *
+nir_tanh_emulated(struct nir_builder *nb, nir_def *src)
+{
+   /* tanh(x) := (e^x - e^(-x)) / (e^x + e^(-x))
+    *
+    * We clamp x to [-10, +10] to avoid precision problems.  When x > 10,
+    * e^x dominates the sum, e^(-x) is lost and tanh(x) is 1.0 for 32 bit
+    * floating point.
+    *
+    * For 16-bit precision this we clamp x to [-4.2, +4.2].
+    */
+   const uint32_t bit_size = src->bit_size;
+   const double clamped_x = bit_size > 16 ? 10.0 : 4.2;
+   nir_def *x = nir_fclamp(nb, src,
+                           nir_imm_floatN_t(nb, -clamped_x, bit_size),
+                           nir_imm_floatN_t(nb, clamped_x, bit_size));
+
+   /* The clamping will filter out NaN values causing an incorrect result.
+    * The comparison is carefully structured to get NaN result for NaN and
+    * get -0 for -0.
+    *
+    *    result = abs(s) > 0.0 ? ... : s;
+    */
+   const unsigned save_math_ctrl = nb->fp_math_ctrl;
+
+   nb->fp_math_ctrl |= nir_fp_preserve_nan | nir_fp_preserve_inf;
+   nir_def *is_regular = nir_flt(nb,
+                                 nir_imm_floatN_t(nb, 0, bit_size),
+                                 nir_fabs(nb, src));
+
+   nb->fp_math_ctrl = save_math_ctrl;
+
+   /* The extra 1.0*s ensures that subnormal inputs are flushed to zero
+    * when that is selected by the shader.
+    */
+   nir_def *flushed = nir_fmul(nb,
+                               src,
+                               nir_imm_floatN_t(nb, 1.0, bit_size));
+
+   return nir_bcsel(nb,
+                    is_regular,
+                    nir_fdiv(nb, nir_fsub(nb, nir_fexp(nb, x),
+                                          nir_fexp(nb, nir_fneg(nb, x))),
+                             nir_fadd(nb, nir_fexp(nb, x),
+                                      nir_fexp(nb, nir_fneg(nb, x)))),
+                    flushed);
+}

@@ -18,7 +18,7 @@
 #define XE_LATENCY_DELTA      1  /* Extra cycles for wider SIMD sizes */
 #define XE_LATENCY_DELTA_MATH 4
 #define XE_LATENCY_ARF        16 /* Latency for ARF dependencies */
-#define XE_LATENCY_DPAS 21 /* Latency for DPAS 8x1 */
+#define XE_LATENCY_DPAS       21 /* Latency for DPAS 8x1 */
 
 /* Latency for SIMD16 SLM messages. If accessing the same location it takes 28
  * cycles. For the sequential access pattern it takes 26 cycles.
@@ -49,7 +49,7 @@
  * TODO: Need to handle Xe3P details.
  */
 unsigned
-jay_latency(jay_shader *s, jay_inst *I)
+jay_latency(jay_shader *s, jay_inst *I, bool bias_acc)
 {
    if (I->op == JAY_OPCODE_SEND) {
       switch (jay_send_sfid(I)) {
@@ -106,15 +106,16 @@ jay_latency(jay_shader *s, jay_inst *I)
               I->dst.file == J_ADDRESS) {
       return XE_LATENCY_ARF;
    } else {
-      /* Pre-RA, we conservatively assume we can't use accumulators. This could
-       * be tuned to bias the scheduler.
-       */
       bool acc = I->dst.file == ACCUM;
-      unsigned sz = jay_simd_width_logical(s, I);
-      unsigned scale = (sz <= 8) ? 0 : (sz == 16) ? 1 : 3;
+      bool maybe_acc =
+         I->dst.file == GPR && I->type == JAY_TYPE_F32 && bias_acc;
 
-      return (acc ? XE_LATENCY_FPU_ACC : XE_LATENCY_FPU) +
-             XE_LATENCY_DELTA * scale;
+      unsigned base = acc       ? XE_LATENCY_FPU_ACC :
+                      maybe_acc ? (XE_LATENCY_FPU_ACC + XE_LATENCY_FPU) / 2 :
+                                  XE_LATENCY_FPU;
+
+      unsigned sz = jay_simd_width_logical(s, I);
+      return base + XE_LATENCY_DELTA * ((sz <= 8) ? 0 : (sz == 16) ? 1 : 3);
    }
 }
 
@@ -151,11 +152,11 @@ jay_occupancy(jay_shader *s, jay_inst *I)
 gen_pipe
 jay_inst_exec_pipe(const struct intel_device_info *devinfo, jay_inst *I)
 {
-   return jay_inst_is_unordered(I)       ? GEN_PIPE_NONE :
-          I->op == JAY_OPCODE_MATH       ? GEN_PIPE_MATH :
-          I->type == JAY_TYPE_F64        ? GEN_PIPE_LONG :
-          jay_type_is_any_float(I->type) ? GEN_PIPE_FLOAT :
-                                           GEN_PIPE_INT;
+   return jay_inst_is_unordered(devinfo, I) ? GEN_PIPE_NONE :
+          I->op == JAY_OPCODE_MATH          ? GEN_PIPE_MATH :
+          I->type == JAY_TYPE_F64           ? GEN_PIPE_LONG :
+          jay_type_is_any_float(I->type)    ? GEN_PIPE_FLOAT :
+                                              GEN_PIPE_INT;
 }
 
 /**
@@ -240,7 +241,7 @@ estimate_block_cycles(jay_function *f, jay_block *block)
                latency = jay_occupancy(shader, sbid[I->dep.pipe]);
             }
          } else {
-            latency = jay_latency(shader, sbid[I->dep.pipe]);
+            latency = jay_latency(shader, sbid[I->dep.pipe], false);
             sbid[I->dep.pipe] = NULL;
          }
 
@@ -266,7 +267,7 @@ estimate_block_cycles(jay_function *f, jay_block *block)
       }
 
       cycles = MAX2(cycles, dep_cycles);
-      unsigned ready_cycle = cycles + jay_latency(shader, I);
+      unsigned ready_cycle = cycles + jay_latency(shader, I, false);
       fifo_add(&alu[jay_inst_exec_pipe(shader->devinfo, I)], ready_cycle);
 
       if (I->dst.file == ACCUM) {

@@ -815,7 +815,6 @@ CalculateMaxOutputBitstreamSize( UINT uiWidth, UINT uiHeight, enum pipe_format f
 
    const UINT MIN_BUFFER_SIZE = 128 * 128 * 2;       // Minimum buffer size for very small frames: 128x128 pixels at 2 bytes/pixel
    const UINT MAX_BUFFER_SIZE = 20 * 1024 * 1024;    // Maximum buffer size of 20MB
-   const float EXPECTED_COMPRESSION_FACTOR = 2.0f;   // Assume 50% of calculated size after compression of raw pixel sizes
 
    UINT alignedWidth = ( uiWidth + 15 ) & ~15;
    UINT alignedHeight = ( uiHeight + 15 ) & ~15;
@@ -839,9 +838,6 @@ CalculateMaxOutputBitstreamSize( UINT uiWidth, UINT uiHeight, enum pipe_format f
          bufferSize = ( ( ( alignedHeight ) * ( alignedWidth ) * 15 ) >> 3 );
          break;
    }
-
-   // Apply EXPECTED_COMPRESSION_FACTOR constant (% of calculated size)
-   bufferSize = static_cast<UINT>( std::ceil( bufferSize / EXPECTED_COMPRESSION_FACTOR ) );
 
    // Clamp buffer size between minimum and maximum limits
    bufferSize = std::max( MIN_BUFFER_SIZE, std::min( bufferSize, MAX_BUFFER_SIZE ) );
@@ -1270,8 +1266,7 @@ CDX12EncHMFT::ProcessSliceBitstreamZeroCopy( LPDX12EncodeContext pDX12EncodeCont
    // Create IMFMediaBuffer from the D3D12Resource (zero-copy)
    spMediaBuffer.Attach(
       new CD3D12BitstreamMFBuffer( this,
-                                   m_pPipeContext,
-                                   pDX12EncodeContext->pOutputBitRes[slice_idx],
+                                   pDX12EncodeContext->spOutputBitResourceHolders[slice_idx].Get(),
                                    static_cast<DWORD>( total_slice_size ),
                                    static_cast<DWORD>( mfsample_codec_unit_metadata[0 /*offset to first NAL*/].offset ) ) );
    return true;
@@ -1940,8 +1935,7 @@ CDX12EncHMFT::xThreadProc( void *pCtx )
 
             // Create IMFMediaBuffer from the D3D12Resource (zero-copy)
             spMemoryBuffer.Attach( new CD3D12BitstreamMFBuffer( pThis,
-                                                                pThis->m_pPipeContext,
-                                                                pDX12EncodeContext->pOutputBitRes[0],
+                                                                pDX12EncodeContext->spOutputBitResourceHolders[0].Get(),
                                                                 static_cast<DWORD>( encoded_bitstream_bytes ),
                                                                 static_cast<DWORD>( metadata.codec_unit_metadata[0].offset ) ) );
 

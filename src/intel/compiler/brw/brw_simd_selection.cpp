@@ -62,31 +62,7 @@ get_prog_data(brw_simd_selection_state &state)
 static bool
 simd_debug_allowed(mesa_shader_stage stage, unsigned simd)
 {
-   uint64_t start;
-   switch (stage) {
-   case MESA_SHADER_COMPUTE:
-      start = DEBUG_CS_SIMD8;
-      break;
-   case MESA_SHADER_TASK:
-      start = DEBUG_TS_SIMD8;
-      break;
-   case MESA_SHADER_MESH:
-      start = DEBUG_MS_SIMD8;
-      break;
-   case MESA_SHADER_RAYGEN:
-   case MESA_SHADER_ANY_HIT:
-   case MESA_SHADER_CLOSEST_HIT:
-   case MESA_SHADER_MISS:
-   case MESA_SHADER_INTERSECTION:
-   case MESA_SHADER_CALLABLE:
-      start = DEBUG_RT_SIMD8;
-      break;
-   default:
-      UNREACHABLE("unknown shader stage in INTEL_SIMD_DEBUG");
-   }
-
-   assert(simd <= 2);
-   return intel_simd & (start << simd);
+   return intel_simd_debug_allowed_modes(stage) & (1 << simd);
 }
 
 /**
@@ -95,8 +71,7 @@ simd_debug_allowed(mesa_shader_stage stage, unsigned simd)
 static bool
 simd_debug_forced(mesa_shader_stage stage, unsigned simd)
 {
-   return (intel_simd_overridden & (1 << stage)) &&
-          simd_debug_allowed(stage, simd);
+   return intel_simd_debug_forced(stage) && simd_debug_allowed(stage, simd);
 }
 
 bool

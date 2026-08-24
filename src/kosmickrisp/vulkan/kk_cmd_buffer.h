@@ -39,6 +39,10 @@ struct kk_root_descriptor_table {
 
          float blend_constant[4];
          float clip_z_coeff;
+
+         float viewport_z_range[KK_MAX_VIEWPORTS * 2];
+         bool emulate_depth_clamp;
+         bool emulate_viewport_z;
       } draw;
       struct {
          uint32_t base_group[3];
@@ -114,9 +118,14 @@ struct kk_rendering_state {
    struct kk_attachment fsr_att;
 
    bool ms_bresenham_lines;
+   /* Barrier tracking to understand if we need to split render passes. */
+   bool write_available;
+   bool ds_write_available;
+   bool storage_write_available;
    bool sample_locations_enable;
    uint32_t sample_locations_count;
    VkSampleLocationEXT sample_locations[KK_MAX_SAMPLES];
+   bool force_attachment_store;
 };
 
 /* Dirty tracking bits for state not tracked by vk_dynamic_graphics_state or
@@ -330,6 +339,8 @@ uint64_t kk_upload_descriptor_root(struct kk_cmd_buffer *cmd,
 
 void kk_cmd_buffer_flush_push_descriptors(struct kk_cmd_buffer *cmd,
                                           struct kk_descriptor_state *desc);
+
+void kk_apply_attachment_store_ops(struct kk_cmd_buffer *cmd, bool force_store);
 
 enum kk_grid_mode {
    KK_GRID_DIRECT = 0u,

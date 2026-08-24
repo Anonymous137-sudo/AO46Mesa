@@ -135,6 +135,8 @@ bool r300_is_only_used_as_float(const nir_alu_instr *instr);
 
 char *r300_check_control_flow(nir_shader *s);
 
+char *r300_check_fs_inputs(nir_shader *s);
+
 void r300_optimize_nir(struct nir_shader *s, struct r300_screen *screen);
 
 extern bool r300_transform_vs_trig_input(struct nir_shader *shader);

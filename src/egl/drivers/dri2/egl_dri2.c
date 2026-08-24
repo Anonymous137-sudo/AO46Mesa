@@ -611,9 +611,30 @@ dri2_query_device_info(const void* driver_device_identifier,
    if (device_info->vendor_name)
       return true;
 
-   return dri_get_drm_device_info(
-      drm_device_name, device_info->device_uuid, device_info->driver_uuid,
-      &device_info->vendor_name, &device_info->renderer_name, &device_info->driver_name);
+
+   enum pipe_device_type device_type;
+   if (!dri_get_drm_device_info(drm_device_name, device_info->device_uuid, device_info->driver_uuid,
+                                &device_info->vendor_name, &device_info->renderer_name,
+                                &device_info->driver_name, &device_type)) {
+      return false;
+   }
+
+   switch (device_type) {
+   case PIPE_DEVICE_TYPE_UNKNOWN:
+      device_info->device_type = EGL_DEVICE_TYPE_OTHER_EXT;
+      break;
+   case PIPE_DEVICE_TYPE_INTEGRATED_GPU:
+      device_info->device_type = EGL_DEVICE_TYPE_INTEGRATED_GPU_EXT;
+      break;
+   case PIPE_DEVICE_TYPE_DISCRETE_GPU:
+      device_info->device_type = EGL_DEVICE_TYPE_DISCRETE_GPU_EXT;
+      break;
+   case PIPE_DEVICE_TYPE_CPU:
+      device_info->device_type = EGL_DEVICE_TYPE_CPU_EXT;
+      break;
+   }
+
+   return true;
 }
 
 void
@@ -791,7 +812,7 @@ dri2_create_screen(_EGLDisplay *disp)
    else if (dri2_dpy->swrast)
       type = DRI_SCREEN_KMS_SWRAST;
 
-   if (dri2_dpy->fd_render_gpu != dri2_dpy->fd_display_gpu) {
+   if (dri2_dpy->fd_render_gpu != dri2_dpy->fd_display_gpu && dri2_dpy->fd_display_gpu != -1) {
       driver_name_display_gpu =
          loader_get_driver_for_fd(dri2_dpy->fd_display_gpu);
       if (driver_name_display_gpu) {

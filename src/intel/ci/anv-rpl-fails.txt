@@ -5,7 +5,6 @@ dEQP-VK.video.decode.vp9.inter_intra_only_separated_dpb_video_layout,Fail
 
 # VKCTS 1.4.4.2 -> 1.4.5.3 uprev
 dEQP-VK.sparse_resources.buffer.ssbo.read_write.sparse_residency_non_resident_strict,Fail
-dEQP-VK.wsi.display_control.swapchain_counter,Crash
 dEQP-VK.wsi.display.create_display_mode,Fail
 
 # VKCTS 1.4.5.3 -> 1.4.6.1 uprev

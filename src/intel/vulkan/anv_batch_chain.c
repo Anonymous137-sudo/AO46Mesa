@@ -39,6 +39,9 @@
 
 #include "util/perf/u_trace.h"
 
+#include "perf/intel_perf.h"
+#include "perf/intel_perf_metrics_library.h"
+
 /** \file anv_batch_chain.c
  *
  * This file contains functions related to anv_cmd_buffer as a data
@@ -70,6 +73,7 @@ anv_reloc_list_init_clone(struct anv_reloc_list *list,
                           const struct anv_reloc_list *other_list)
 {
    list->dep_words = other_list->dep_words;
+   list->uses_relocs = other_list->uses_relocs;
 
    if (list->dep_words > 0) {
       list->deps =
@@ -144,6 +148,9 @@ VkResult
 anv_reloc_list_append(struct anv_reloc_list *list,
                       struct anv_reloc_list *other)
 {
+   if (!list->uses_relocs)
+      return VK_SUCCESS;
+
    anv_reloc_list_grow_deps(list, other->dep_words);
    for (uint32_t w = 0; w < other->dep_words; w++)
       list->deps[w] |= other->deps[w];
@@ -775,20 +782,6 @@ anv_cmd_buffer_alloc_dynamic_state(struct anv_cmd_buffer *cmd_buffer,
    return state;
 }
 
-struct anv_state
-anv_cmd_buffer_alloc_general_state(struct anv_cmd_buffer *cmd_buffer,
-                                   uint32_t size, uint32_t alignment)
-{
-   if (size == 0)
-      return ANV_STATE_NULL;
-   struct anv_state state =
-      anv_state_stream_alloc(&cmd_buffer->general_state_stream,
-                             size, alignment);
-   if (state.map == NULL)
-      anv_batch_set_error(&cmd_buffer->batch, VK_ERROR_OUT_OF_DEVICE_MEMORY);
-   return state;
-}
-
 /** Allocate space associated with a command buffer
  *
  * Some commands like vkCmdBuildAccelerationStructuresKHR() can end up needing
@@ -969,17 +962,6 @@ anv_cmd_buffer_fini_batch_bo_chain(struct anv_cmd_buffer *cmd_buffer)
 void
 anv_cmd_buffer_reset_batch_bo_chain(struct anv_cmd_buffer *cmd_buffer)
 {
-   /* Delete all batch bos */
-   list_for_each_entry_safe(struct anv_batch_bo, bbo,
-                            &cmd_buffer->batch_bos, link) {
-      list_del(&bbo->link);
-      anv_batch_bo_destroy(bbo, cmd_buffer);
-   }
-
-   anv_batch_set_storage(&cmd_buffer->batch, ANV_NULL_ADDRESS, NULL, 0);
-   cmd_buffer->batch.allocated_batch_size = 0;
-   cmd_buffer->batch.relocs = NULL;
-
    while (u_vector_length(&cmd_buffer->bt_block_states) > 0) {
       struct anv_state *bt_block = u_vector_remove(&cmd_buffer->bt_block_states);
       anv_binding_table_pool_free(cmd_buffer->device, *bt_block);
@@ -997,6 +979,28 @@ anv_cmd_buffer_reset_batch_bo_chain(struct anv_cmd_buffer *cmd_buffer)
                             &cmd_buffer->generation.batch_bos, link) {
       list_del(&bbo->link);
       anv_batch_bo_destroy(bbo, cmd_buffer);
+   }
+
+   /* Delete all but the first batch bo if we ever allocated one */
+   if (!list_is_empty(&cmd_buffer->batch_bos)) {
+      while (cmd_buffer->batch_bos.next != cmd_buffer->batch_bos.prev) {
+         struct anv_batch_bo *bbo = anv_cmd_buffer_current_batch_bo(cmd_buffer);
+         list_del(&bbo->link);
+         anv_batch_bo_destroy(bbo, cmd_buffer);
+      }
+      assert(!list_is_empty(&cmd_buffer->batch_bos));
+      anv_batch_bo_start(anv_cmd_buffer_current_batch_bo(cmd_buffer),
+                         &cmd_buffer->batch,
+                         GFX9_MI_BATCH_BUFFER_START_length * 4);
+
+      struct anv_batch_bo *first_bbo = anv_cmd_buffer_current_batch_bo(cmd_buffer);
+      *(struct anv_batch_bo **)u_vector_add(&cmd_buffer->seen_bbos) = first_bbo;
+      assert(first_bbo->bo->size == ANV_MIN_CMD_BUFFER_BATCH_SIZE);
+      cmd_buffer->batch.allocated_batch_size = first_bbo->bo->size;
+   } else {
+      anv_batch_set_storage(&cmd_buffer->batch, ANV_NULL_ADDRESS, NULL, 0);
+      cmd_buffer->batch.allocated_batch_size = 0;
+      cmd_buffer->batch.relocs = NULL;
    }
 
    /* And reset generation batch */
@@ -1628,6 +1632,13 @@ anv_queue_submit(struct vk_queue *vk_queue,
       &utrace_submit);
    if (result != VK_SUCCESS)
       return result;
+
+   if (device->physical->perf && device->physical->perf->use_metrics_library && queue->metrics_library_configuration) {
+      if (!intel_perf_metrics_library_activate_configuration(device->physical->perf,
+                                                             queue->metrics_library_configuration)) {
+         return VK_ERROR_UNKNOWN;
+      }
+   }
 
    uint64_t start_ts = intel_ds_begin_submit(&queue->ds);
 

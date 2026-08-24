@@ -103,6 +103,19 @@ lower(jay_builder *b, jay_inst *I)
       jay_WHILE(b);
       return true;
 
+   case JAY_OPCODE_SEL_ACTIVE: {
+      if (I->type == JAY_TYPE_U64) {
+         jay_MOV_IMM64(b, I->dst, jay_sel_active_value(I))->type = JAY_TYPE_U64;
+      } else {
+         jay_MOV(b, I->dst, (uint32_t) jay_sel_active_value(I));
+      }
+
+      jay_inst *mov = jay_MOV(b, I->dst, I->src[0]);
+      mov->uniform = false;
+      mov->type = I->type;
+      return true;
+   }
+
    default:
       return false;
    }
@@ -130,8 +143,7 @@ pass(jay_function *func)
 
          if (I->zero_inactive) {
             if (!BITSET_TEST(inactive_are_0, I->cond_flag.reg)) {
-               jay_MOV(&b, I->cond_flag, 0)->type =
-                  JAY_TYPE_U | func->shader->dispatch_width;
+               jay_MOV(&b, I->cond_flag, 0)->type = jay_flag_type(func);
                BITSET_SET(inactive_are_0, I->cond_flag.reg);
             }
 

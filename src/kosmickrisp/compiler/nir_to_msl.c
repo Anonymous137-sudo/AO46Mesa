@@ -191,6 +191,8 @@ static const char *sysval_table[SYSTEM_VALUE_MAX] = {
    [SYSTEM_VALUE_SAMPLE_ID] = "uint gl_SampleID [[sample_id]]",
    [SYSTEM_VALUE_SAMPLE_MASK_IN] = "uint gl_SampleMask [[sample_mask]]",
    [SYSTEM_VALUE_PRIMITIVE_ID] = "uint gl_PrimitiveID [[primitive_id]]",
+   [SYSTEM_VALUE_BARYCENTRIC_PERSP_COORD] =
+      "float3 gl_BaryCoord [[barycentric_coord]]",
    [SYSTEM_VALUE_AMPLIFICATION_ID_KK] =
       "uint mtl_AmplificationID [[amplification_id]]",
    [SYSTEM_VALUE_FIRST_VERTEX] = "uint gl_FirstVertex [[base_vertex]]",
@@ -487,9 +489,9 @@ static void
 alu_fcmp_to_msl(struct nir_to_msl_ctx *ctx, nir_alu_instr *instr,
                 const char *op)
 {
-   /* KK_WORKAROUND_14 Since comparison operations must always preserve NANs,
-    * this is always applied */
-   if (!(ctx->disabled_workarounds & BITFIELD64_BIT(14))) {
+   /* KK_WORKAROUND_17 Follow up to KK_WORKAROUND_14 since the safe pragma is
+    * not enough in macOS26 */
+   if (!(ctx->disabled_workarounds & BITFIELD64_BIT(17))) {
       /* fneu is unordered (true on NaN), the others are ordered. */
       bool ordered = instr->op != nir_op_fneu;
       for (unsigned i = 0; i < 2; i++) {
@@ -1470,6 +1472,9 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
    case nir_intrinsic_load_primitive_id:
       P(ctx, "gl_PrimitiveID;\n");
       break;
+   case nir_intrinsic_load_barycentric_coord_pixel:
+      P(ctx, "gl_BaryCoord;\n");
+      break;
    case nir_intrinsic_load_sample_pos:
       P(ctx, "get_sample_position(gl_SampleID);\n");
       break;
@@ -1515,17 +1520,29 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
       break;
    }
    case nir_intrinsic_load_output: {
-      unsigned idx = nir_src_as_uint(instr->src[0]);
+      /* Should have been constant folded by now to 0 */
+      assert(nir_src_as_uint(instr->src[0]) == 0u);
+
       nir_io_semantics io = nir_intrinsic_io_semantics(instr);
-      nir_alu_type type = nir_intrinsic_dest_type(instr);
       bool needs_padding =
          FRAG_RESULT_DATA0 <= io.location && io.location <= FRAG_RESULT_DATA7;
       if (needs_padding) {
-         P(ctx, "%s4(", tex_type_name(type));
+         const char *type = tex_type_name(nir_intrinsic_dest_type(instr));
+         uint32_t num_components =
+            ctx->outputs_info[io.location].num_components;
+         if (num_components == 1) {
+            P(ctx, "%s4(as_type<%s>(", type, type);
+         } else {
+            P(ctx, "%s4(as_type<%s%d>(", type, type, num_components);
+         }
       }
-      msl_output_name(ctx, io.location + idx, 0);
+
+      uint64_t output_mask = 1 << (io.location);
+      bool load_from_input = !(output_mask & ctx->shader->info.outputs_written);
+      msl_output_name(ctx, io.location, 0, load_from_input);
 
       if (needs_padding) {
+         P(ctx, ")");
          for (uint32_t i = ctx->outputs_info[io.location].num_components;
               i < 4u; ++i)
             P(ctx, ", %c", "0001"[i]);
@@ -1543,8 +1560,7 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
       uint32_t dst_num_components = msl_output_num_components(ctx, location);
       uint32_t num_components = instr->num_components;
 
-      P_IND(ctx, "%s", "");
-      msl_output_name(ctx, location, component);
+      msl_output_name(ctx, location, component, false);
       if (dst_num_components > 1u) {
          P(ctx, ".");
          for (unsigned i = 0; i < num_components; i++)
@@ -1841,6 +1857,10 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
       P(ctx, "));\n");
       break;
    }
+   case nir_intrinsic_bindless_image_levels:
+      src_to_msl(ctx, &instr->src[0]);
+      P(ctx, ".get_num_mip_levels();\n");
+      break;
    case nir_intrinsic_image_load:
    case nir_intrinsic_bindless_image_load:
       image_reference_to_msl(ctx, instr);
@@ -2299,7 +2319,7 @@ jump_instr_to_msl(struct nir_to_msl_ctx *ctx, nir_jump_instr *jump)
 }
 
 static const char *
-alu_fp_math_mode_pragma(const nir_alu_instr *alu)
+alu_fp_math_mode_pragma(struct nir_to_msl_ctx *ctx, const nir_alu_instr *alu)
 {
    unsigned fp_math_ctrl = alu->fp_math_ctrl;
 
@@ -2312,6 +2332,15 @@ alu_fp_math_mode_pragma(const nir_alu_instr *alu)
             fp_math_ctrl |= src_alu->fp_math_ctrl;
          }
       }
+   }
+
+   /* KK_WORKAROUND_14 Since comparison operations must always preserve NANs,
+    * this is always applied */
+   if (!(ctx->disabled_workarounds & BITFIELD64_BIT(14))) {
+      bool is_min_max_sz = (alu->op == nir_op_fmin || alu->op == nir_op_fmax) &&
+                           (fp_math_ctrl & nir_fp_preserve_signed_zero);
+      if (is_min_max_sz || nir_alu_instr_is_comparison(alu))
+         return "safe";
    }
 
    if (fp_math_ctrl & (nir_fp_no_contract | nir_fp_no_reassoc))
@@ -2332,7 +2361,7 @@ instr_to_msl(struct nir_to_msl_ctx *ctx, nir_instr *instr)
    switch (instr->type) {
    case nir_instr_type_alu: {
       nir_alu_instr *alu = nir_instr_as_alu(instr);
-      const char *math_mode = alu_fp_math_mode_pragma(alu);
+      const char *math_mode = alu_fp_math_mode_pragma(ctx, alu);
       if (math_mode) {
          P_IND(ctx, "{\n");
          P_IND(ctx, "#pragma METAL fp math_mode(%s)\n", math_mode);
@@ -2518,10 +2547,6 @@ msl_preprocess_nir(struct nir_shader *nir)
     * PositiveShaderImageAccess.UndefImage */
    NIR_PASS(_, nir, nir_opt_dce);
 
-   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
-      nir_input_attachment_options input_attachment_options = {};
-      NIR_PASS(_, nir, nir_lower_input_attachments, &input_attachment_options);
-   }
    NIR_PASS(_, nir, nir_opt_combine_barriers, NULL, NULL);
    NIR_PASS(_, nir, nir_lower_var_copies);
    NIR_PASS(_, nir, nir_split_var_copies);
@@ -2570,6 +2595,7 @@ msl_optimize_nir(struct nir_shader *nir)
       NIR_PASS(progress, nir, nir_opt_if, 0);
       NIR_PASS(progress, nir, nir_opt_remove_phis);
       NIR_PASS(progress, nir, nir_opt_loop);
+      NIR_PASS(progress, nir, nir_opt_licm, NULL);
       NIR_PASS(progress, nir, nir_lower_pack);
       NIR_PASS(progress, nir, nir_lower_alu_to_scalar, kk_scalarize_filter,
                NULL);

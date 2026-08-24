@@ -452,7 +452,7 @@ void si_nir_gather_info(struct si_screen *sscreen, struct nir_shader *nir,
       }
    }
 
-   if (sscreen->debug_flags & DBG(USE_LLVM)) {
+   if (sscreen->shader_debug_flags & DBG(USE_LLVM)) {
       nir->info.use_aco_amd = false;
    } else {
       nir->info.use_aco_amd = aco_is_gpu_supported(&sscreen->info) &&
@@ -644,7 +644,7 @@ void si_nir_gather_info(struct si_screen *sscreen, struct nir_shader *nir,
       info->allow_flat_shading = !(info->uses_sysval_persp_center || info->uses_sysval_persp_centroid ||
                                    info->uses_sysval_persp_sample || info->uses_sysval_linear_center ||
                                    info->uses_sysval_linear_centroid || info->uses_sysval_linear_sample ||
-                                   info->uses_interp_at_sample || nir->info.writes_memory ||
+                                   info->uses_sysval_pull_model || nir->info.writes_memory ||
                                    nir->info.fs.uses_fbfetch_output ||
                                    nir->info.fs.needs_coarse_quad_helper_invocations ||
                                    BITSET_TEST(nir->info.system_values_read, SYSTEM_VALUE_FRAG_COORD_Z) ||

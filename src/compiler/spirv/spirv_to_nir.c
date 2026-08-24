@@ -56,9 +56,13 @@ static const struct spirv_capabilities implemented_capabilities = {
    .ComputeDerivativeGroupQuadsKHR = true,
    .ConstantDataKHR = true,
    .CooperativeMatrixKHR = true,
+   .CooperativeMatrixConversionsEXT = true,
+   .CooperativeMatrixGetCoordinateEXT = true,
+   .CooperativeMatrixReductionsEXT = true,
+   .CooperativeMatrixPerElementOperationsEXT = true,
    .CooperativeMatrixConversionsNV = true,
-   .CooperativeMatrixReductionsNV = true,
-   .CooperativeMatrixPerElementOperationsNV = true,
+   .CooperativeMatrixTensorAddressingNV = true,
+   .CooperativeMatrixBlockLoadsNV = true,
    .CoreBuiltinsARM = true,
    .CullDistance = true,
    .DemoteToHelperInvocation = true,
@@ -192,6 +196,7 @@ static const struct spirv_capabilities implemented_capabilities = {
    .SubgroupBufferBlockIOINTEL = true,
    .SubgroupShuffleINTEL = true,
    .SubgroupVoteKHR = true,
+   .TensorAddressingNV = true,
    .Tessellation = true,
    .TessellationPointSize = true,
    .TextureBlockMatchQCOM = true,
@@ -455,6 +460,8 @@ vtn_base_type_to_string(enum vtn_base_type t)
    CASE(function);
    CASE(event);
    CASE(cooperative_matrix);
+   CASE(tensor_layout);
+   CASE(tensor_view);
    CASE(buffer);
    }
 #undef CASE
@@ -863,9 +870,15 @@ vtn_handle_debug_printf(struct vtn_builder *b, SpvOp ext_opcode,
          fields[i].name = "";
          fields[i].offset = next_offset;
 
-         int size = (int) arg->def->bit_size * arg->def->num_components / 8;
+         unsigned num_components =
+            arg->def->num_components == 3 ? 4 : arg->def->num_components;
+
+         int size = (int) arg->def->bit_size * num_components / 8;
          info->arg_sizes[i] = size;
+
+         /* Match u_printf_impl, which 4-aligns each argument as it reads. */
          next_offset += size;
+         next_offset = align(next_offset, 4);
       }
 
       nir_variable *packed_args = nir_local_variable_create(
@@ -1304,6 +1317,34 @@ vtn_types_compatible(struct vtn_builder *b,
       }
       return true;
 
+   case vtn_base_type_tensor_layout:
+      if (t1->length != t2->length)
+         return false;
+
+      if (t1->tensor_layout_clamp_mode != t2->tensor_layout_clamp_mode)
+         return false;
+
+      for (unsigned i = 0; i < t1->length; i++) {
+         if (!vtn_types_compatible(b, t1->tensor_layout_members[i], t2->tensor_layout_members[i]))
+            return false;
+      }
+      return true;
+   case vtn_base_type_tensor_view:
+      if (t1->length != t2->length)
+         return false;
+
+      if (t1->tensor_view_has_dims != t2->tensor_view_has_dims)
+         return false;
+
+      for (unsigned p = 0; p < NIR_TENSOR_VIEW_MAX_PERMUTATIONS; p++)
+         if (t1->tensor_view_permutations[p] != t2->tensor_view_permutations[p])
+            return false;
+
+      for (unsigned i = 0; i < t1->length; i++) {
+         if (!vtn_types_compatible(b, t1->tensor_view_members[i], t2->tensor_view_members[i]))
+            return false;
+      }
+      return true;
    case vtn_base_type_accel_struct:
    case vtn_base_type_ray_query:
       return true;
@@ -1360,6 +1401,18 @@ vtn_type_copy(struct vtn_builder *b, struct vtn_type *src)
       dest->offsets = vtn_alloc_array(b, unsigned, src->length);
       memcpy(dest->offsets, src->offsets,
              src->length * sizeof(src->offsets[0]));
+      break;
+
+   case vtn_base_type_tensor_layout:
+      dest->tensor_layout_members = vtn_alloc_array(b, struct vtn_type *, src->length);
+      memcpy(dest->tensor_layout_members, src->tensor_layout_members,
+             src->length * sizeof(src->tensor_layout_members[0]));
+      break;
+
+   case vtn_base_type_tensor_view:
+      dest->tensor_view_members = vtn_alloc_array(b, struct vtn_type *, src->length);
+      memcpy(dest->tensor_view_members, src->tensor_view_members,
+             src->length * sizeof(src->tensor_view_members[0]));
       break;
 
    case vtn_base_type_function:
@@ -2469,6 +2522,11 @@ vtn_handle_type(struct vtn_builder *b, SpvOp opcode,
       break;
    }
 
+   case SpvOpTypeTensorLayoutNV:
+   case SpvOpTypeTensorViewNV:
+      vtn_handle_tensor_layout_type(b, val, opcode, w, count);
+      break;
+
    case SpvOpTypeCooperativeMatrixKHR:
       vtn_handle_cooperative_type(b, val, opcode, w, count);
       break;
@@ -2519,7 +2577,7 @@ vtn_handle_type(struct vtn_builder *b, SpvOp opcode,
    }
 }
 
-static nir_constant *
+nir_constant *
 vtn_null_constant(struct vtn_builder *b, struct vtn_type *type)
 {
    nir_constant *c = rzalloc(b, nir_constant);
@@ -4327,10 +4385,15 @@ fill_common_atomic_sources(struct vtn_builder *b, SpvOp opcode,
 }
 
 static nir_def *
-get_image_coord(struct vtn_builder *b, uint32_t value)
+get_image_coord(struct vtn_builder *b, uint32_t value,
+                const struct glsl_type *image_type)
 {
    nir_def *coord = vtn_get_nir_ssa(b, value);
-   /* The image_load_store intrinsics assume a 4-dim coordinate */
+   unsigned num_components =
+      glsl_get_sampler_coordinate_components(image_type);
+
+   /* Keep only the components used by the image target, then pad to vec4. */
+   coord = nir_trim_vector(&b->nb, coord, num_components);
    return nir_pad_vec4(&b->nb, coord);
 }
 
@@ -4400,7 +4463,7 @@ vtn_handle_image(struct vtn_builder *b, SpvOp opcode,
       val->image = vtn_alloc(b, struct vtn_image_pointer);
 
       val->image->image = vtn_nir_deref(b, w[3]);
-      val->image->coord = get_image_coord(b, w[4]);
+      val->image->coord = get_image_coord(b, w[4], val->image->image->type);
       val->image->sample = vtn_get_nir_ssa(b, w[5]);
       val->image->lod = nir_imm_int(&b->nb, 0);
       val->image->format = type->image_format;
@@ -4414,7 +4477,7 @@ vtn_handle_image(struct vtn_builder *b, SpvOp opcode,
       val->image->image = nir_build_deref_cast(&b->nb, vtn_get_nir_ssa(b, w[4]),
                                                nir_var_image,
                                                type->glsl_image, 0);
-      val->image->coord = get_image_coord(b, w[5]);
+      val->image->coord = get_image_coord(b, w[5], val->image->image->type);
       val->image->sample = vtn_get_nir_ssa(b, w[6]);
       val->image->lod = nir_imm_int(&b->nb, 0);
       val->image->format = type->image_format;
@@ -4493,7 +4556,7 @@ vtn_handle_image(struct vtn_builder *b, SpvOp opcode,
       res_val = vtn_untyped_value(b, w[3]);
       image.image = vtn_get_image(b, w[3], &access, &image_format);
       image.format = image_format;
-      image.coord = get_image_coord(b, w[4]);
+      image.coord = get_image_coord(b, w[4], image.image->type);
 
       operands = count > 5 ? w[5] : SpvImageOperandsMaskNone;
 
@@ -4534,7 +4597,7 @@ vtn_handle_image(struct vtn_builder *b, SpvOp opcode,
       res_val = vtn_untyped_value(b, w[1]);
       image.image = vtn_get_image(b, w[1], &access, &image_format);
       image.format = image_format;
-      image.coord = get_image_coord(b, w[2]);
+      image.coord = get_image_coord(b, w[2], image.image->type);
 
       /* texel = w[3] */
 
@@ -5128,7 +5191,7 @@ vtn_vector_shuffle(struct vtn_builder *b, unsigned num_components,
 /*
  * Concatentates a number of vectors/scalars together to produce a vector
  */
-static nir_def *
+nir_def *
 vtn_vector_construct(struct vtn_builder *b, unsigned num_components,
                      unsigned num_srcs, nir_def **srcs)
 {
@@ -5167,7 +5230,7 @@ vtn_vector_construct(struct vtn_builder *b, unsigned num_components,
 /*
  * Creates a copy of `src`, reinterpreting it as `dest_type`.
  */
-static struct vtn_ssa_value *
+struct vtn_ssa_value *
 vtn_composite_copy_logical(struct vtn_builder *b, struct vtn_ssa_value *src, struct vtn_type* dest_type)
 {
    assert(!src->is_variable);
@@ -5193,7 +5256,7 @@ vtn_composite_copy_logical(struct vtn_builder *b, struct vtn_ssa_value *src, str
    return dest;
 }
 
-static struct vtn_ssa_value *
+struct vtn_ssa_value *
 vtn_composite_insert(struct vtn_builder *b, struct vtn_ssa_value *src,
                      struct vtn_type *src_type, struct vtn_ssa_value *insert,
                      const uint32_t *indices, unsigned num_indices)
@@ -5236,7 +5299,7 @@ vtn_composite_insert(struct vtn_builder *b, struct vtn_ssa_value *src,
    return dest;
 }
 
-static struct vtn_ssa_value *
+struct vtn_ssa_value *
 vtn_composite_extract(struct vtn_builder *b, struct vtn_ssa_value *src,
                       const uint32_t *indices, unsigned num_indices)
 {
@@ -6372,6 +6435,8 @@ vtn_handle_variable_or_type_instruction(struct vtn_builder *b, SpvOp opcode,
    case SpvOpTypeCooperativeMatrixKHR:
    case SpvOpTypeUntypedPointerKHR:
    case SpvOpTypeBufferEXT:
+   case SpvOpTypeTensorLayoutNV:
+   case SpvOpTypeTensorViewNV:
       vtn_handle_type(b, opcode, w, count);
       break;
 
@@ -6881,7 +6946,7 @@ vtn_handle_allocate_node_payloads(struct vtn_builder *b, SpvOp opcode,
    nir_initialize_node_payloads(&b->nb, payloads, payload_count, node_index, .execution_scope = scope);
 }
 
-static void
+void
 vtn_handle_abort(struct vtn_builder *b, const uint32_t *w, unsigned count)
 {
    struct vtn_type *msg_type = vtn_get_type(b, w[1]);
@@ -7441,19 +7506,31 @@ vtn_handle_body_instruction(struct vtn_builder *b, SpvOp opcode,
    case SpvOpFinishWritingNodePayloadAMDX:
       break;
 
+   case SpvOpCreateTensorLayoutNV:
+   case SpvOpTensorLayoutSetBlockSizeNV:
+   case SpvOpTensorLayoutSetDimensionNV:
+   case SpvOpTensorLayoutSetStrideNV:
+   case SpvOpTensorLayoutSliceNV:
+   case SpvOpTensorLayoutSetClampValueNV:
+   case SpvOpCreateTensorViewNV:
+   case SpvOpTensorViewSetDimensionNV:
+   case SpvOpTensorViewSetStrideNV:
+   case SpvOpTensorViewSetClipNV:
+      vtn_handle_tensor_layout_instruction(b, opcode, w, count);
+      break;
+
    case SpvOpCooperativeMatrixLoadKHR:
    case SpvOpCooperativeMatrixStoreKHR:
    case SpvOpCooperativeMatrixLengthKHR:
    case SpvOpCooperativeMatrixMulAddKHR:
+   case SpvOpCooperativeMatrixGetCoordinateEXT:
+   case SpvOpCooperativeMatrixReduceEXT:
+   case SpvOpCooperativeMatrixPerElementOpEXT:
    case SpvOpCooperativeMatrixConvertNV:
    case SpvOpCooperativeMatrixTransposeNV:
-   case SpvOpCooperativeMatrixReduceNV:
-   case SpvOpCooperativeMatrixPerElementOpNV:
+   case SpvOpCooperativeMatrixLoadTensorNV:
+   case SpvOpCooperativeMatrixStoreTensorNV:
       vtn_handle_cooperative_instruction(b, opcode, w, count);
-      break;
-
-   case SpvOpAbortKHR:
-      vtn_handle_abort(b, w, count);
       break;
 
    default:

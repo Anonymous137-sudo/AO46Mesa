@@ -212,7 +212,7 @@ populate_dag(struct sched_ctx *ctx, jay_block *block)
        */
       if ((I->op == JAY_OPCODE_SEND && !jay_send_pure(I)) ||
           I->op == JAY_OPCODE_SCHEDULE_BARRIER ||
-          I->op == JAY_OPCODE_INIT_HELPERS ||
+          I->op == JAY_OPCODE_CHECK_TDR ||
           I->op == JAY_OPCODE_DEMOTE ||
           I->op == JAY_OPCODE_IS_HELPER ||
           (I->op == JAY_OPCODE_SEND &&
@@ -254,6 +254,8 @@ weighted_demand(struct sched_ctx *ctx, signed *demands)
 static void
 adjust_demand_before(struct sched_ctx *ctx, jay_inst *I, signed *demand)
 {
+   assert(ctx->phase < POSTRA);
+
    /* Make destinations live */
    jay_foreach_dst(I, dst) {
       demand[dst.file] -= jay_num_values(dst);
@@ -263,7 +265,7 @@ adjust_demand_before(struct sched_ctx *ctx, jay_inst *I, signed *demand)
 static void
 adjust_demand_after(struct sched_ctx *ctx, jay_inst *I, signed *demand)
 {
-   unsigned counter = 0;
+   assert(ctx->phase < POSTRA);
 
    /* Dead destinations are those written by the instruction but killed
     * immediately after the instruction finishes.
@@ -273,16 +275,17 @@ adjust_demand_after(struct sched_ctx *ctx, jay_inst *I, signed *demand)
       demand[dst.file] += !u_sparse_bitset_test(&ctx->live, index);
    }
 
-   /* Late-kill sources. We precomputed the deduplication info and stashed it in
-    * the I->last_use bitfield for convenience.
-    */
+   /* Late-kill sources. TODO: Is there a better way to deduplicate? */
    jay_foreach_src_index(I, s, c, index) {
-      if (BITSET_TEST(I->last_use, counter)) {
-         assert(I->src[s].file < JAY_NUM_SSA_FILES);
+      if (!BITSET_TEST(ctx->seen, index)) {
          demand[I->src[s].file] += !u_sparse_bitset_test(&ctx->live, index);
       }
 
-      counter++;
+      BITSET_SET(ctx->seen, index);
+   }
+
+   jay_foreach_src_index(I, _, c, index) {
+      BITSET_CLEAR(ctx->seen, index);
    }
 }
 
@@ -290,7 +293,8 @@ static inline unsigned
 ready_cycle(struct sched_ctx *s, bool backward, uint32_t node)
 {
    unsigned cycle = s->cycle;
-   uint32_t lat = backward ? jay_latency(s->func->shader, s->insts[node]) : 0;
+   uint32_t lat =
+      backward ? jay_latency(s->func->shader, s->insts[node], true) : 0;
    struct jay_dag *dag = backward ? &s->dag_t : &s->dag;
 
    jay_dag_foreach_edge(dag, node, it) {
@@ -317,6 +321,8 @@ choose_inst(struct sched_ctx *s, enum sched_mode mode)
       jay_inst *I = s->insts[*head];
       int32_t score = 0;
       if (pressure_weight) {
+         assert(s->phase < POSTRA);
+
          /* To minimize pressure, consider the effect on liveness. */
          int32_t deltas[JAY_NUM_SSA_FILES] = { 0 };
          adjust_demand_after(s, I, deltas);
@@ -380,26 +386,6 @@ gather_block_info(struct sched_ctx *s, jay_block *block, void *memctx)
          continue;
       }
 
-      if (s->phase < POSTRA && I->op != JAY_OPCODE_PHI_SRC) {
-         unsigned counter = 0;
-
-         /* Filter duplicates as we go */
-         BITSET_ZERO(I->last_use);
-
-         jay_foreach_src_index(I, _, c, index) {
-            if (!BITSET_TEST(s->seen, index)) {
-               BITSET_SET(I->last_use, counter);
-            }
-
-            BITSET_SET(s->seen, index);
-            counter++;
-         }
-
-         jay_foreach_src_index(I, _, c, index) {
-            BITSET_CLEAR(s->seen, index);
-         }
-      }
-
       if (s->phase == EARLY) {
          adjust_demand_after(s, I, demand);
          max_pressure = MAX2(weighted_demand(s, demand), max_pressure);
@@ -451,7 +437,7 @@ schedule_block(jay_block *block,
       u_sparse_bitset_dup_with_ctx(&s->live, &block->live_out, memctx);
    }
 
-   if (s->phase > EARLY) {
+   if (s->phase > EARLY && s->phase < POSTRA) {
       jay_foreach_inst_in_block_rev(block, I) {
          if (!jay_op_ends_block(I->op)) {
             break;
@@ -505,7 +491,7 @@ schedule_block(jay_block *block,
          s->cycle_ready[node] =
             s->cycle + ((mode & BACKWARD) ?
                            0 :
-                           jay_latency(s->func->shader, s->insts[node]));
+                           jay_latency(s->func->shader, s->insts[node], true));
          s->cycle++;
       }
    }
@@ -586,6 +572,7 @@ pass(jay_function *f)
       }
    } else {
       jay_compute_liveness(f);
+      jay_calculate_last_use(f);
       jay_calculate_register_demands(f);
       sctx.seen = BITSET_LINEAR_ZALLOC(linctx, f->ssa_alloc);
       sctx.prera.def = linear_zalloc_array(linctx, uint32_t, f->ssa_alloc);
@@ -596,9 +583,6 @@ pass(jay_function *f)
    sctx.blocks = linear_zalloc_array(linctx, struct sched_block, f->num_blocks);
    jay_dag_init(&sctx.dag, memctx, nr_inst);
    jay_dag_iterator_init(&sctx.it, &sctx.dag);
-
-   unsigned ugpr_per_grf = jay_ugpr_per_grf(f->shader);
-   unsigned ugpr_per_gpr = jay_grf_per_gpr(f->shader) * ugpr_per_grf;
 
    /* Build the DAG for the whole program and transpose it */
    jay_foreach_block(f, block) {
@@ -637,9 +621,15 @@ pass(jay_function *f)
             block->demand_max[UGPR] + block->demand_max[FLAG];
          unsigned demand_gpr = block->demand_max[GPR];
 
-         if (((demand_gpr * ugpr_per_gpr) + demand_ugpr) >=
-             (120 * ugpr_per_grf)) {
-            f->prioritize_pressure = true;
+         unsigned sched_at = f->shader->devinfo->ver >= 30 ? 64 : 120;
+         unsigned prioritize_at = f->shader->devinfo->ver >= 30 ? 90 : 120;
+
+         unsigned demand =
+            (demand_gpr * jay_ugpr_per_gpr(f->shader)) + demand_ugpr;
+
+         if (demand >= sched_at * jay_ugpr_per_grf(f->shader)) {
+            f->prioritize_pressure =
+               demand >= prioritize_at * jay_ugpr_per_grf(f->shader);
             schedule_block(block, &sctx, memctx, BACKWARD | PRESSURE);
          }
       } else if (sctx.phase == POSTSPILL) {
@@ -657,7 +647,7 @@ pass(jay_function *f)
             while (sctx.aggression > 0 && bw == FAIL_PRESSURE) {
                bw = schedule_block(block, &sctx, memctx,
                                    BACKWARD | PRESSURE | LATENCY);
-               sctx.aggression--;
+               sctx.aggression -= 2;
             }
          }
       } else {

@@ -47,12 +47,7 @@ impl WordCopies<'_> {
         assert!(!src.swizzle.is_word_swizzle());
         // For zero copies, get rid of source modifiers and trivialize swizzles
         if src.is_zero() {
-            src = match ssa.bits() {
-                8 => Src::imm_u8(0),
-                16 => Src::imm_u16(0),
-                32 => 0.into(),
-                _ => panic!("Invalid SSAValue bit size"),
-            };
+            src = Src::zero(ssa.bits());
         }
         self.copies.insert(ssa, WordCopy { src_type, src });
     }
@@ -69,6 +64,17 @@ impl WordCopies<'_> {
                             op.src.clone().word(w),
                             DataType::i(ssa.bits()),
                         );
+                    }
+                }
+            }
+            Op::IAdd(op) => {
+                if let DstRef::SSA(vec) = &op.dst.dst_ref {
+                    let ssa = vec[0];
+
+                    if op.srcs[0].is_zero() {
+                        self.add_copy(ssa, op.srcs[1].clone(), op.dst_type);
+                    } else if op.srcs[1].is_zero() {
+                        self.add_copy(ssa, op.srcs[0].clone(), op.dst_type);
                     }
                 }
             }
@@ -312,7 +318,7 @@ impl WordCopies<'_> {
         // If we read multiple words, we must have a word or none swizzle
         let swiz_words = src.swizzle.as_words().unwrap();
 
-        let mut words = [Src::from(0), Src::from(0)];
+        let mut words = [Src::from(0_u32), Src::from(0_u32)];
         for i in 0..2 {
             if let Some(w) = swiz_words[i].word_idx() {
                 if let Some(copy) = self.copies.get(&src_vec[usize::from(w)]) {
@@ -333,7 +339,7 @@ impl WordCopies<'_> {
 
         // Check if it's just a 64-bit zero
         if words[1].is_zero() && words[0].is_zero() {
-            return Some(0.into());
+            return Some(0_u32.into());
         }
 
         if src.swizzle.is_none() {
@@ -487,7 +493,7 @@ impl ByteCopy {
                     }
                 }
             }
-            SrcRef::Reg(_) => {
+            SrcRef::Reg(_) | SrcRef::Mem(_) => {
                 panic!("Must be run in SSA form");
             }
         }

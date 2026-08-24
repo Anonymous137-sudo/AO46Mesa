@@ -180,13 +180,6 @@ intel_debug_flag_for_shader_stage(mesa_shader_stage stage)
    return flags[stage];
 }
 
-#define DEBUG_FS_SIMD  (DEBUG_FS_SIMD8   | DEBUG_FS_SIMD16  | DEBUG_FS_SIMD32 | \
-                        DEBUG_FS_SIMD2X8 | DEBUG_FS_SIMD4X8 | DEBUG_FS_SIMD2X16)
-#define DEBUG_CS_SIMD  (DEBUG_CS_SIMD8  | DEBUG_CS_SIMD16  | DEBUG_CS_SIMD32)
-#define DEBUG_TS_SIMD  (DEBUG_TS_SIMD8  | DEBUG_TS_SIMD16  | DEBUG_TS_SIMD32)
-#define DEBUG_MS_SIMD  (DEBUG_MS_SIMD8  | DEBUG_MS_SIMD16  | DEBUG_MS_SIMD32)
-#define DEBUG_RT_SIMD  (DEBUG_RT_SIMD8  | DEBUG_RT_SIMD16  | DEBUG_RT_SIMD32)
-
 uint64_t intel_debug_batch_frame_start = 0;
 uint64_t intel_debug_batch_frame_stop = -1;
 
@@ -249,7 +242,7 @@ process_intel_debug_variable_once(void)
       debug_get_num_option("INTEL_DEBUG_BKP_AFTER_DRAW_COUNT", 0);
 
    intel_shader_dump_filter =
-      debug_get_num_option("INTEL_SHADER_DUMP_FILTER", 0);
+      debug_get_unsigned_option("INTEL_SHADER_DUMP_FILTER", 0);
 
    intel_debug_bkp_before_dispatch_count =
       debug_get_num_option("INTEL_DEBUG_BKP_BEFORE_DISPATCH_COUNT", 0);
@@ -285,8 +278,10 @@ process_intel_debug_variable_once(void)
 
 static const struct debug_named_value use_jay_options[] = {
    { "vs",  BITFIELD_BIT(MESA_SHADER_VERTEX),    "Use jay for vertex shaders"   },
+   { "task",  BITFIELD_BIT(MESA_SHADER_TASK),   "Use jay for task shaders"  },
    { "tcs", BITFIELD_BIT(MESA_SHADER_TESS_CTRL), "Use jay for tessellation control shaders" },
    { "tes", BITFIELD_BIT(MESA_SHADER_TESS_EVAL), "Use jay for tessellation evaluation shaders" },
+   { "mesh",  BITFIELD_BIT(MESA_SHADER_MESH),   "Use jay for mesh shaders"  },
    { "fs",  BITFIELD_BIT(MESA_SHADER_FRAGMENT),  "Use jay for fragment shaders" },
    { "gs",  BITFIELD_BIT(MESA_SHADER_GEOMETRY),  "Use jay for geometry shaders" },
    { "cs",  BITFIELD_BIT(MESA_SHADER_COMPUTE),   "Use jay for compute shaders"  },
@@ -296,8 +291,7 @@ static const struct debug_named_value use_jay_options[] = {
    { "miss",  BITFIELD_BIT(MESA_SHADER_MISS),          "Use jay for miss shaders"  },
    { "isec",  BITFIELD_BIT(MESA_SHADER_INTERSECTION),  "Use jay for intersection shaders"  },
    { "call",  BITFIELD_BIT(MESA_SHADER_CALLABLE),      "Use jay for callable shaders"  },
-   { "all", ~(BITFIELD_BIT(MESA_SHADER_MESH) |
-              BITFIELD_BIT(MESA_SHADER_TASK)),         "Use jay for supported shader stages" },
+   { "all", ~0,         "Use jay for supported shader stages" },
    DEBUG_NAMED_VALUE_END
 };
 
@@ -310,13 +304,13 @@ intel_use_jay(const struct intel_device_info *devinfo, mesa_shader_stage stage)
    if (stage == MESA_SHADER_KERNEL)
       stage = MESA_SHADER_COMPUTE;
 
-   return devinfo->ver == 20 && (use_jay & BITFIELD_BIT(stage));
+   return devinfo->ver >= 20 && (use_jay & BITFIELD_BIT(stage));
 }
 
 bool
 intel_use_jay_any_stage(const struct intel_device_info *devinfo)
 {
-   return devinfo->ver == 20 && use_jay;
+   return devinfo->ver >= 20 && use_jay;
 }
 
 void

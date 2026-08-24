@@ -16,6 +16,7 @@
 #include "kosmickrisp/bridge/mtl_command_buffer.h"
 #include "kosmickrisp/bridge/mtl_device.h"
 #include "kosmickrisp/bridge/mtl_encoder.h"
+#include "kosmickrisp/bridge/vk_to_mtl_map.h"
 
 #include "vk_alloc.h"
 #include "vk_pipeline_layout.h"
@@ -74,6 +75,9 @@ kk_destroy_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer)
    struct kk_cmd_buffer *cmd =
       container_of(vk_cmd_buffer, struct kk_cmd_buffer, vk);
    struct kk_cmd_pool *pool = kk_cmd_buffer_pool(cmd);
+
+   if (cmd->drawable)
+      mtl_release(cmd->drawable);
 
    mtl_release(cmd->argument_table);
    kk_destroy_encoder_state(&cmd->cmp[0]);
@@ -266,6 +270,12 @@ cs_start_render(struct kk_cmd_buffer *cmd)
    cmd->gfx.encoder = mtl_new_render_command_encoder_with_descriptor(
       cmd->gfx.cmd_buf, state->render_pass_descriptor);
 
+   /* Starting a new render pass means we already flushed and no barrier is
+    * needed. */
+   state->render.write_available = false;
+   state->render.ds_write_available = false;
+   state->render.storage_write_available = false;
+
    uint32_t layer_ids[KK_MAX_MULTIVIEW_VIEW_COUNT] = {};
    uint32_t count = 0u;
    u_foreach_bit(id, view_mask)
@@ -391,19 +401,92 @@ kk_cmd_bind_root_to_argument_table(struct kk_cmd_buffer *cmd, uint64_t addr)
    cmd->state.root_addr = addr;
 }
 
+/* Returns true if a render pass split is required. The main cases are:
+ * - Texture write -> barrier -> attachment read
+ * - Attachment write -> barrier -> texture read
+ * - Depth/stencil write -> barrier -> depth/stencil read (Metal limitation)
+ *
+ * For color attachment write -> barrier -> color attachment read there is no
+ * need to split the render pass.
+ *
+ * TODO_KOSMICKRISP Potential improvement would be to track where the
+ * attachments lie in memory and check against the buffers/images provided in
+ * the barrier to avoid splitting a render pass that will never overlap the
+ * attachment memory. Meaning there was no write to the attachment and therefore
+ * no split is needed.
+ */
+static bool
+kk_barrier_requires_encoder_split(struct kk_cmd_buffer *cmd,
+                                  const VkDependencyInfo *dep)
+{
+   const VkAccessFlags2 texture_read_access =
+      VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT |
+      VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
+   const VkAccessFlags2 any_write_access =
+      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT |
+      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+      VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+      VK_ACCESS_2_MEMORY_WRITE_BIT;
+   const VkAccessFlags2 ds_write_access =
+      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+      VK_ACCESS_2_MEMORY_WRITE_BIT;
+   const VkAccessFlags2 storage_write_access =
+      VK_ACCESS_2_SHADER_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+      VK_ACCESS_2_MEMORY_WRITE_BIT;
+   struct kk_rendering_state *render = &cmd->state.gfx.render;
+   const bool has_ds =
+      render->depth_att.iview != NULL || render->stencil_att.iview != NULL;
+
+   VkAccessFlags2 src = 0, dst = 0;
+   for (uint32_t i = 0; i < dep->memoryBarrierCount; i++) {
+      src |= dep->pMemoryBarriers[i].srcAccessMask;
+      dst |= dep->pMemoryBarriers[i].dstAccessMask;
+   }
+   for (uint32_t i = 0; i < dep->bufferMemoryBarrierCount; i++) {
+      src |= dep->pBufferMemoryBarriers[i].srcAccessMask;
+      dst |= dep->pBufferMemoryBarriers[i].dstAccessMask;
+   }
+   for (uint32_t i = 0; i < dep->imageMemoryBarrierCount; i++) {
+      src |= dep->pImageMemoryBarriers[i].srcAccessMask;
+      dst |= dep->pImageMemoryBarriers[i].dstAccessMask;
+   }
+
+   if (src & any_write_access)
+      render->write_available = true;
+   if (has_ds && (src & ds_write_access))
+      render->ds_write_available = true;
+   if (src & storage_write_access)
+      render->storage_write_available = true;
+
+   if (render->write_available && (dst & texture_read_access))
+      return true;
+
+   return (render->ds_write_available || render->storage_write_available) &&
+          (dst & VK_ACCESS_2_INPUT_ATTACHMENT_READ_BIT);
+}
+
 VKAPI_ATTR void VKAPI_CALL
 kk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
                        const VkDependencyInfo *pDependencyInfo)
 {
    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
 
-   /* TODO_KOSMICKRISP Don't break the render pass and add a single encoder
-    * barrier. This requires to read directly from the framebuffer which
-    * requires not reading input attachments as textures.
-    */
+   /* TODO_KOSMICKRISP Lighten barriers according to the actual requested
+    * barrier. To take advantage of this we need to remove the chaining of
+    * encoders. */
    if (cmd->gfx.encoder) {
-      cs_end(cmd);
-      cs_start_render(cmd);
+      /* Multisample attachments require render pass split always. Then based on
+       * the barrier and if we are using depth/stencil or not, we may have to
+       * break the render pass. See comment in kk_barrier_requires_encoder_split
+       */
+      if (cmd->state.gfx.render.samples > 1 ||
+          kk_barrier_requires_encoder_split(cmd, pDependencyInfo)) {
+         kk_apply_attachment_store_ops(cmd, true);
+         cs_end(cmd);
+         cs_start_render(cmd);
+      } else
+         mtl_barrier_after_encoder_stages(cmd->gfx.encoder, MTL_STAGE_VERTEX,
+                                          MTL_STAGE_FRAGMENT);
    } else if (cmd->pre_gfx->encoder) {
       /* We chain encoders, so an intra-encoder barrier is enough here:
        * no need to tear down and recreate the encoder.
@@ -815,4 +898,87 @@ kk_CmdEndConditionalRenderingEXT(VkCommandBuffer commandBuffer)
    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
 
    cmd->state.cond_render.enabled = false;
+}
+
+void
+kk_apply_attachment_store_ops(struct kk_cmd_buffer *cmd, bool force_store)
+{
+   if (!cmd->gfx.encoder)
+      return;
+
+   struct kk_rendering_state *render = &cmd->state.gfx.render;
+   mtl_render_encoder *encoder = cs_get_render(cmd);
+
+   force_store |= render->force_attachment_store;
+
+   for (uint32_t i = 0; i < render->color_att_count; i++) {
+      uint32_t logical_index = cmd->state.gfx.render.color_map[i];
+
+      if (render->color_att[i].iview &&
+          logical_index != MESA_VK_ATTACHMENT_UNUSED) {
+         bool resolve =
+            render->color_att[i].resolve_mode != VK_RESOLVE_MODE_NONE;
+         bool retain =
+            (render->color_att[i].load_op == VK_ATTACHMENT_LOAD_OP_LOAD ||
+             render->color_att[i].load_op == VK_ATTACHMENT_LOAD_OP_NONE) &&
+            render->color_att[i].store_op == VK_ATTACHMENT_STORE_OP_NONE;
+
+         enum mtl_store_action store_action =
+            force_store || resolve || retain
+               ? MTL_STORE_ACTION_STORE
+               : vk_attachment_store_op_to_mtl_store_action(
+                    render->color_att[i].store_op);
+         mtl_render_set_color_store_action(encoder, store_action,
+                                           logical_index);
+      }
+   }
+   if (render->depth_att.iview) {
+      bool resolve = render->depth_att.resolve_mode != VK_RESOLVE_MODE_NONE;
+      bool retain = (render->depth_att.load_op == VK_ATTACHMENT_LOAD_OP_LOAD ||
+                     render->depth_att.load_op == VK_ATTACHMENT_LOAD_OP_NONE) &&
+                    render->depth_att.store_op == VK_ATTACHMENT_STORE_OP_NONE;
+
+      enum mtl_store_action store_action =
+         force_store || resolve || retain
+            ? MTL_STORE_ACTION_STORE
+            : vk_attachment_store_op_to_mtl_store_action(
+                 render->depth_att.store_op);
+      mtl_render_set_depth_store_action(encoder, store_action);
+   }
+   if (render->stencil_att.iview) {
+      bool resolve = render->stencil_att.resolve_mode != VK_RESOLVE_MODE_NONE;
+      bool retain =
+         (render->stencil_att.load_op == VK_ATTACHMENT_LOAD_OP_LOAD ||
+          render->stencil_att.load_op == VK_ATTACHMENT_LOAD_OP_NONE) &&
+         render->stencil_att.store_op == VK_ATTACHMENT_STORE_OP_NONE;
+
+      enum mtl_store_action store_action =
+         force_store || resolve || retain
+            ? MTL_STORE_ACTION_STORE
+            : vk_attachment_store_op_to_mtl_store_action(
+                 render->stencil_att.store_op);
+      mtl_render_set_stencil_store_action(encoder, store_action);
+   }
+}
+
+/* VK_AMD_buffer_marker */
+
+VKAPI_ATTR void VKAPI_CALL
+kk_CmdWriteMarkerToMemoryAMD(VkCommandBuffer commandBuffer,
+                             const VkMemoryMarkerInfoAMD *pInfo)
+{
+   VK_FROM_HANDLE(kk_cmd_buffer, cmd_buffer, commandBuffer);
+   struct libkk_imm_write write;
+
+   /* If we are not in a render, we can just insert a cheap barrier */
+   if (!cmd_buffer->gfx.encoder) {
+      mtl_barrier_after_encoder_stages(cs_get_compute(cmd_buffer, true),
+                                       MTL_STAGE_DISPATCH | MTL_STAGE_BLIT,
+                                       MTL_STAGE_DISPATCH | MTL_STAGE_BLIT);
+   } else
+      cs_end(cmd_buffer);
+
+   write.value = pInfo->marker;
+   write.address = pInfo->dstRange.address;
+   kk_cmd_write(cmd_buffer, write);
 }

@@ -164,11 +164,13 @@ lower_sysval(nir_builder *b, nir_intrinsic_instr *intr,
       break;
    case nir_intrinsic_load_layer_id:
       /* On v9+, we have real layered rendering */
-      if (PAN_ARCH >= 9)
-         return false;
-
-      offset = offsetof(struct panvk_fb_sysvals, layer_id);
-      val = nir_u2u32(b, load_sysval(b, 1, 16, offset));
+      if (PAN_ARCH >= 9) {
+         val = nir_load_frame_arg_pan(b);
+         val = nir_extract_u8_imm(b, nir_u2u32(b, val), 0);
+      } else {
+         offset = offsetof(struct panvk_fb_sysvals, layer_id);
+         val = nir_u2u32(b, load_sysval(b, 1, 16, offset));
+      }
       break;
    default:
       return false;

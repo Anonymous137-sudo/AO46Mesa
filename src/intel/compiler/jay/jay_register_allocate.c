@@ -214,6 +214,9 @@ typedef struct jay_ra_state {
 
    /** Vector affinities for each def. */
    struct affinity *affinities;
+
+   /* Last-use counter within the block */
+   unsigned lu;
 } jay_ra_state;
 
 static bool
@@ -244,7 +247,7 @@ add_copy(struct util_dynarray *copies, jay_reg dst, jay_reg src)
 {
    if (dst != src) {
       assert(r_file(dst) == r_file(src));
-      util_dynarray_append(copies, ((struct jay_parallel_copy) { dst, src }));
+      util_dynarray_append(copies, ((struct jay_parallel_copy){ dst, src }));
    }
 }
 
@@ -265,16 +268,21 @@ push_temp(jay_builder *b,
       return tmp;
    }
 
-   /* Find a register that does not conflict with the inputs */
-   bool avoid_regs[2] = { false, false };
-   if (!jay_is_null(avoid1) && avoid1.file == file && avoid1.reg < 2) {
-      avoid_regs[avoid1.reg] = true;
-   }
-   if (!jay_is_null(avoid2) && avoid2.file == file && avoid2.reg < 2) {
-      avoid_regs[avoid2.reg] = true;
-   }
+   /* Find an aligned register that does not conflict with the inputs */
+   jay_def av[] = { avoid1, avoid2 };
+   unsigned r = 0;
+   bool succ;
+   do {
+      succ = true;
+      for (unsigned i = 0; i < ARRAY_SIZE(av); ++i) {
+         if (!jay_is_null(av[i]) && av[i].file == file && av[i].reg == r) {
+            r += (file == UGPR ? jay_ugpr_per_grf(b->shader) : 1);
+            succ = false;
+         }
+      }
+   } while (!succ);
 
-   unsigned r = avoid_regs[0] ? (avoid_regs[1] ? 2 : 1) : 0;
+   assert(r < jay_num_regs(b->shader, file) && "should have found something");
    jay_def new = def_from_reg(make_reg(file, r));
 
    /* Put accumulators down the float pipe - it's still a raw move. */
@@ -327,10 +335,9 @@ mov(jay_builder *b, jay_def dst, jay_def src, struct jay_temp_regs temps)
       jay_MOV(b, dst, temp)->type = acc_dst ? JAY_TYPE_F32 : JAY_TYPE_U32;
       pop_temp(b, temp, backing);
    } else {
-      jay_MOV(b, dst, src)->type =
-         (acc_src || acc_dst) ? JAY_TYPE_F32 :
-         dst.file == FLAG     ? JAY_TYPE_U | b->shader->dispatch_width :
-                                JAY_TYPE_U32;
+      jay_MOV(b, dst, src)->type = (acc_src || acc_dst) ? JAY_TYPE_F32 :
+                                   dst.file == FLAG ? jay_flag_type(b->func) :
+                                                      JAY_TYPE_U32;
    }
 }
 
@@ -630,7 +637,7 @@ find_temp_regs(jay_ra_state *ra)
    /* For efficiency we only bother using stride=4 temporaries */
    jay_reg gpr = try_find_free_reg(ra, GPR, ~0, true);
 
-   return (struct jay_temp_regs) {
+   return (struct jay_temp_regs){
       .gpr = gpr,
       .ugpr = try_find_free_reg(ra, UGPR, ~0, false),
       .gpr2 = try_find_free_reg(ra, GPR, gpr, true),
@@ -757,7 +764,7 @@ pick_regs(jay_ra_state *ra,
           bool is_src)
 {
    struct jay_partition *partition = &ra->b.shader->partition;
-   bool eot = jay_is_early_eot_send(ra->b.shader, I);
+   bool eot = jay_is_early_eot_send(ra->b.shader, I) && file != FLAG;
 
    /* If possible, keep sources in place to avoid shuffles. */
    if (is_src && jay_channel(var, 0) != 0) {
@@ -906,7 +913,7 @@ assign_regs_for_inst(jay_ra_state *ra, jay_inst *I)
             BITSET_SET(ra->sources[r_file(reg)], r_reg(reg));
 
             eviction_indices[nr_copies] = index;
-            copies[nr_copies++] = (struct jay_parallel_copy) { .src = reg };
+            copies[nr_copies++] = (struct jay_parallel_copy){ .src = reg };
             release_reg(ra, reg);
          }
       }
@@ -946,7 +953,10 @@ assign_regs_for_inst(jay_ra_state *ra, jay_inst *I)
       jay_def var = *(vars[i]);
       unsigned size = jay_num_values(var);
       unsigned alignment =
-         I->op == JAY_OPCODE_EXPAND_QUAD ? 1 : util_next_power_of_two(size);
+         I->op == JAY_OPCODE_EXPAND_QUAD ||
+               (I->op == JAY_OPCODE_VECTOR_EXTRACT && is_src) ?
+            1 :
+            util_next_power_of_two(size);
       enum jay_file file = var.file;
       enum jay_stride min_stride = JAY_STRIDE_2, max_stride = JAY_STRIDE_8;
 
@@ -972,9 +982,8 @@ assign_regs_for_inst(jay_ra_state *ra, jay_inst *I)
 
          killed = true;
          for (unsigned i = 0; i < size; ++i) {
-            assert(lu + i < JAY_NUM_LAST_USE_BITS);
             if (jay_channel(I->src[s], i) == 0 ||
-                !BITSET_TEST(I->last_use, lu + i)) {
+                !BITSET_TEST(ra->block->last_use, ra->lu + lu + i)) {
                killed = false;
                break;
             }
@@ -1012,7 +1021,8 @@ assign_regs_for_inst(jay_ra_state *ra, jay_inst *I)
           * to use the unpadded size to avoid leaking a register for vec3
           * destinations tied to vec4 sources.
           */
-         BITSET_CLEAR_COUNT(I->last_use, lu_offs, jay_num_values(var));
+         BITSET_CLEAR_COUNT(ra->block->last_use, ra->lu + lu_offs,
+                            jay_num_values(var));
          BITSET_CLEAR(ra->killed[file], base);
       } else {
          /* Otherwise pin our choice */
@@ -1075,16 +1085,15 @@ assign_regs_for_inst(jay_ra_state *ra, jay_inst *I)
    /* Sources selected for early-kill have had their last_use fields cleared.
     * Anything else is late-killed. Release those registers.
     */
-   unsigned kill_idx = 0;
    jay_foreach_ssa_src(I, s) {
       jay_foreach_index(saved_srcs[s], c, idx) {
          if (I->src[s].file < JAY_NUM_RA_FILES &&
-             BITSET_TEST(I->last_use, kill_idx)) {
+             BITSET_TEST(ra->block->last_use, ra->lu)) {
 
             release_reg(ra, make_reg(I->src[s].file, I->src[s].reg + c));
          }
 
-         kill_idx++;
+         ra->lu++;
       }
    }
 }
@@ -1093,6 +1102,7 @@ static void
 local_ra(jay_ra_state *ra, jay_block *block)
 {
    ra->block = block;
+   ra->lu = 0;
 
    /* Initialize local data structures based on global state */
    jay_foreach_ra_file(file) {
@@ -1144,7 +1154,7 @@ local_ra(jay_ra_state *ra, jay_block *block)
       if (jay_debug & JAY_DBG_PRINTDEMAND) {
          printf("(RA) [G:%u\tU:%u\tF:%u] ", register_demand(ra, GPR),
                 register_demand(ra, UGPR), register_demand(ra, FLAG));
-         jay_print_inst(stdout, I);
+         jay_print_inst(stdout, block, I, NULL);
       }
    }
 
@@ -1235,7 +1245,7 @@ static void
 construct_phi_webs(struct phi_web_node *web, jay_function *f)
 {
    for (unsigned i = 0; i < f->ssa_alloc; ++i) {
-      web[i] = (struct phi_web_node) { .parent = i, .reg = NO_REG };
+      web[i] = (struct phi_web_node){ .parent = i, .reg = NO_REG };
    }
 
    jay_foreach_block(f, block) {
@@ -1298,8 +1308,10 @@ map_gpr_to_acc(jay_shader *shader, jay_def *x)
 static void
 jay_register_allocate_function(jay_function *f)
 {
-   /* TODO: Could do a simplified liveness analysis gathering only .kill */
-   jay_compute_liveness(f);
+   /* Pre-RA scheduling ran a liveness analysis but disrupted all the
+    * last-use bits, so recalculate that only.
+    */
+   jay_calculate_last_use(f);
 
    jay_shader *shader = f->shader;
    jay_ra_state ra = { .b.shader = shader, .b.func = f };
@@ -1360,7 +1372,7 @@ jay_register_allocate_function(jay_function *f)
             ra.affinities[index].nr = MIN2(jay_num_values(I->src[s]), 15);
          }
 
-         if (jay_is_early_eot_send(shader, I)) {
+         if (jay_is_early_eot_send(shader, I) && I->src[s].file != FLAG) {
             ra.affinities[index].eot = true;
          }
 

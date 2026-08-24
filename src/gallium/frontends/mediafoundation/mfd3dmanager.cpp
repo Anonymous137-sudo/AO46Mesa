@@ -141,6 +141,11 @@ void CMFD3DManager::ReleaseAllocators()
    {
       m_spReconstructedPictureBufferPool.Reset();
    }
+
+   if( m_spD3D12BitstreamMFBufferManager )
+   {
+      m_spD3D12BitstreamMFBufferManager.Reset();
+   }
 }
 
 static inline HRESULT

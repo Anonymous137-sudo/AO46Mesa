@@ -98,6 +98,9 @@ void mtl_set_depth_bias(mtl_render_encoder *encoder, float depth_bias,
 void mtl_set_depth_clip_mode(mtl_render_encoder *encoder,
                              enum mtl_depth_clip_mode mode);
 
+void mtl_set_depth_test_bounds(mtl_render_encoder *encoder, float min,
+                               float max);
+
 void mtl_set_vertex_amplification_count(mtl_render_encoder *encoder,
                                         uint32_t *layer_ids, uint32_t id_count);
 

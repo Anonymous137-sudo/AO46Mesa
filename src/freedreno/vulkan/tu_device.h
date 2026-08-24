@@ -13,7 +13,6 @@
 #include "tu_common.h"
 #include "perfcntrs/freedreno_perfcntr.h"
 
-#include "radix_sort/radix_sort_vk.h"
 #include "util/rwlock.h"
 #include "util/u_vector.h"
 #include "util/vma.h"
@@ -324,9 +323,6 @@ struct tu_device
    struct nir_shader *float32_shader;
    struct nir_shader *float64_shader;
    mtx_t softfloat_mutex;
-
-   radix_sort_vk_t *radix_sort;
-   mtx_t radix_sort_mutex;
 
 #define MIN_SCRATCH_BO_SIZE_LOG2 12 /* A page */
 

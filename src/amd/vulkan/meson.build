@@ -277,7 +277,7 @@ endif
 
 libvulkan_radeon = shared_library(
   'vulkan_radeon',
-  [libradv_files, radv_entrypoints, radv_drirc, sha1_h, radix_sort_spv, bvh_spv, radv_annotate_layer],
+  [libradv_files, radv_entrypoints, radv_drirc, sha1_h, bvh_spv, radv_annotate_layer],
   vs_module_defs : vulkan_api_def,
   include_directories : [
     inc_include, inc_src, inc_amd, inc_amd_common, inc_amd_common_llvm,

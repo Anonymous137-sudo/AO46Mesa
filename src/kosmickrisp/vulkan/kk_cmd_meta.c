@@ -190,9 +190,8 @@ kk_meta_end(struct kk_cmd_buffer *cmd, struct kk_meta_save *save,
 
 VKAPI_ATTR void VKAPI_CALL
 kk_CmdFillMemoryKHR(VkCommandBuffer commandBuffer,
-                    const VkDeviceAddressRangeKHR* dstRange,
-                    VkAddressCommandFlagsKHR dstFlags,
-                    uint32_t data)
+                    const VkDeviceAddressRangeKHR *dstRange,
+                    VkAddressCommandFlagsKHR dstFlags, uint32_t data)
 {
    VK_FROM_HANDLE(kk_cmd_buffer, cmd, commandBuffer);
    struct kk_device *dev = kk_cmd_buffer_device(cmd);

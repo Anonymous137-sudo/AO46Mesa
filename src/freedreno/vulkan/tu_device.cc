@@ -205,6 +205,13 @@ static bool tu_is_vk_1_1(const struct tu_physical_device *device)
    return tu_has_multiview(device);
 }
 
+static uint32_t
+tu_subgroup_size(const struct tu_physical_device *device)
+{
+   return device->info->threadsize_base *
+          (device->expose_double_threadsize ? 2 : 1);
+}
+
 static void
 get_device_extensions(const struct tu_physical_device *device,
                       struct vk_device_extension_table *ext)
@@ -399,6 +406,9 @@ get_device_extensions(const struct tu_physical_device *device,
       .EXT_shader_module_identifier = true,
       .EXT_shader_replicated_composites = true,
       .EXT_shader_stencil_export = true,
+      .EXT_shader_subgroup_ballot =
+         device->info->props.has_getfiberid && tu_subgroup_size(device) <= 64,
+      .EXT_shader_subgroup_vote = device->info->props.has_getfiberid,
       .EXT_shader_uniform_buffer_unsized_array = true,
       .EXT_shader_viewport_index_layer = tu_has_multiview(device),
       .EXT_subgroup_size_control = tu_is_vk_1_1(device),
@@ -963,8 +973,7 @@ tu_get_physical_device_properties_1_1(struct tu_physical_device *pdevice,
    p->deviceNodeMask = 0;
    p->deviceLUIDValid = false;
 
-   p->subgroupSize =
-      pdevice->expose_double_threadsize ? pdevice->info->threadsize_base * 2 : pdevice->info->threadsize_base;
+   p->subgroupSize = tu_subgroup_size(pdevice);
    p->subgroupSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT;
    p->subgroupSupportedOperations = VK_SUBGROUP_FEATURE_BASIC_BIT |
                                     VK_SUBGROUP_FEATURE_VOTE_BIT |
@@ -979,8 +988,7 @@ tu_get_physical_device_properties_1_1(struct tu_physical_device *pdevice,
       p->subgroupSupportedStages |= VK_SHADER_STAGE_ALL_GRAPHICS;
       p->subgroupSupportedOperations |= VK_SUBGROUP_FEATURE_QUAD_BIT;
    }
-
-   p->subgroupQuadOperationsInAllStages = false;
+   p->subgroupQuadOperationsInAllStages = pdevice->info->props.has_getfiberid;
 
    p->pointClippingBehavior = VK_POINT_CLIPPING_BEHAVIOR_ALL_CLIP_PLANES;
    p->maxMultiviewViewCount =
@@ -1112,10 +1120,17 @@ tu_get_physical_device_properties_1_3(struct tu_physical_device *pdevice,
                                       struct vk_properties *p)
 {
    p->minSubgroupSize = pdevice->info->threadsize_base;
-   p->maxSubgroupSize =
-      pdevice->expose_double_threadsize ? pdevice->info->threadsize_base * 2 : pdevice->info->threadsize_base;
+   p->maxSubgroupSize = tu_subgroup_size(pdevice);
    p->maxComputeWorkgroupSubgroups = pdevice->info->max_waves;
-   p->requiredSubgroupSizeStages = VK_SHADER_STAGE_ALL;
+   /* Only compute and fragment shaders can run with a doubled wave size, the
+    * geometry stages always run at threadsize_base.  So when we expose more
+    * than one possible subgroup size we can't honor a required subgroup size
+    * in those stages.
+    */
+   p->requiredSubgroupSizeStages =
+      p->minSubgroupSize == p->maxSubgroupSize
+         ? VK_SHADER_STAGE_ALL
+         : (VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT);
 
    p->maxInlineUniformBlockSize = MAX_INLINE_UBO_RANGE;
    p->maxPerStageDescriptorInlineUniformBlocks = MAX_INLINE_UBOS;
@@ -1245,9 +1260,8 @@ tu_get_properties(struct tu_physical_device *pdevice,
    props->maxComputeWorkGroupCount[0] =
       props->maxComputeWorkGroupCount[1] =
       props->maxComputeWorkGroupCount[2] = 65535;
-   props->maxComputeWorkGroupInvocations = pdevice->expose_double_threadsize
-                                              ? pdevice->info->threadsize_base * 2 * pdevice->info->max_waves
-                                              : pdevice->info->threadsize_base * pdevice->info->max_waves;
+   props->maxComputeWorkGroupInvocations =
+      tu_subgroup_size(pdevice) * pdevice->info->max_waves;
    if (pdevice->info->props.is_a702) {
       props->maxComputeWorkGroupSize[0] =
          props->maxComputeWorkGroupSize[1] = 512;
@@ -2792,7 +2806,6 @@ tu_device_destroy_mutexes(struct tu_device *device)
    mtx_destroy(&device->kgsl_profiling_mutex);
    mtx_destroy(&device->event_mutex);
    mtx_destroy(&device->trace_mutex);
-   mtx_destroy(&device->radix_sort_mutex);
    mtx_destroy(&device->fiber_pvtmem_bo.mtx);
    mtx_destroy(&device->wave_pvtmem_bo.mtx);
    mtx_destroy(&device->mutex);
@@ -2903,7 +2916,6 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
    mtx_init(&device->kgsl_profiling_mutex, mtx_plain);
    mtx_init(&device->event_mutex, mtx_plain);
    mtx_init(&device->trace_mutex, mtx_plain);
-   mtx_init(&device->radix_sort_mutex, mtx_plain);
    mtx_init(&device->fiber_pvtmem_bo.mtx, mtx_plain);
    mtx_init(&device->wave_pvtmem_bo.mtx, mtx_plain);
    mtx_init(&device->vis_stream_mtx, mtx_plain);

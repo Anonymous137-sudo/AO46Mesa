@@ -1302,6 +1302,16 @@ kk_flush_dynamic_state(struct kk_cmd_buffer *cmd)
       desc->root_dirty = true;
    }
 
+   if (IS_DIRTY(DS_DEPTH_BOUNDS_TEST_ENABLE) ||
+       IS_DIRTY(DS_DEPTH_BOUNDS_TEST_BOUNDS)) {
+      /* Metal does not expose a separate flag for enabling the depth bounds
+       * test. Instead, it treats [0, 1] as disabled. */
+      bool bounds_enable = dyn->ds.depth.bounds_test.enable;
+      float bounds_min = bounds_enable ? dyn->ds.depth.bounds_test.min : 0.0f;
+      float bounds_max = bounds_enable ? dyn->ds.depth.bounds_test.max : 1.0f;
+      mtl_set_depth_test_bounds(enc, bounds_min, bounds_max);
+   }
+
    if (IS_DIRTY(DS_STENCIL_REFERENCE))
       mtl_set_stencil_references(
          enc, cmd->vk.dynamic_graphics_state.ds.stencil.front.reference,

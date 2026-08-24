@@ -85,8 +85,6 @@ struct radv_meta_state {
    mtx_t mtx;
 
    struct {
-      struct radix_sort_vk *radix_sort_64;
-      struct radix_sort_vk *radix_sort_96;
       struct vk_acceleration_structure_build_ops build_ops;
       struct vk_acceleration_structure_build_args build_args;
    } accel_struct_build;

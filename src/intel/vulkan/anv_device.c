@@ -568,7 +568,7 @@ anv_state_pools_init(struct anv_device *device)
                                    &(struct anv_state_pool_params) {
                                       .name         = "binding table pool",
                                       .base_address = anv_physical_device_get_binding_table_pool_va(device->physical)->addr,
-                                      .block_size   = device->physical->instance->drirc.perf.bt_block_size,
+                                      .block_size   = device->physical->drirc.perf.bt_block_size,
                                       .max_size     = anv_physical_device_get_binding_table_pool_va(device->physical)->size,
                                    });
    } else {
@@ -1240,7 +1240,7 @@ VkResult anv_CreateDevice(
    if (result != VK_SUCCESS)
       goto fail_meta_device;
 
-   device->vk.disable_lto = device->physical->instance->drirc.debug.disable_lto;
+   device->vk.disable_lto = device->physical->drirc.debug.disable_lto;
 
    simple_mtx_init(&device->accel_struct_build.mutex, mtx_plain);
    simple_mtx_init(&device->fp64_mutex, mtx_plain);
@@ -1366,16 +1366,6 @@ void anv_DestroyDevice(
 
    /* Do TRTT batch garbage collection before destroying queues. */
    anv_device_finish_trtt(device);
-
-   if (device->accel_struct_build.radix_sort_64) {
-      radix_sort_vk_destroy(device->accel_struct_build.radix_sort_64,
-                            _device, &device->vk.alloc);
-   }
-
-   if (device->accel_struct_build.radix_sort_96) {
-      radix_sort_vk_destroy(device->accel_struct_build.radix_sort_96,
-                            _device, &device->vk.alloc);
-   }
 
    vk_meta_device_finish(&device->vk, &device->meta_device);
 
@@ -1797,7 +1787,7 @@ VkResult anv_AllocateMemory(
           * consumer side relying on implicit fencing can have a fence to
           * wait for render complete.
           */
-         if (pdevice->instance->drirc.debug.external_memory_implicit_sync &&
+         if (pdevice->drirc.debug.external_memory_implicit_sync &&
              (image->vk.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
             alloc_flags |= ANV_BO_ALLOC_IMPLICIT_WRITE;
       }

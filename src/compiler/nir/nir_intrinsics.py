@@ -472,6 +472,10 @@ intrinsic("interp_deref_at_vertex", src_comp=[1, 1], dest_comp=0,
 intrinsic("deref_buffer_array_length", src_comp=[-1], dest_comp=1,
           indices=[ACCESS], flags=[CAN_ELIMINATE, CAN_REORDER])
 
+# Gets the address of a buffer
+intrinsic("deref_buffer_address", src_comp=[-1], dest_comp=0,
+          indices=[ACCESS], flags=[CAN_ELIMINATE, CAN_REORDER])
+
 # Gets the length of an unsized array
 intrinsic("deref_implicit_array_length", src_comp=[-1], dest_comp=1,
           flags=[CAN_ELIMINATE, CAN_REORDER])
@@ -1353,7 +1357,7 @@ load("per_primitive_input", [1], [BASE, COMPONENT, DEST_TYPE, IO_SEMANTICS], [CA
 # src[] = { buffer_index, offset }.
 load("ssbo", [-1, 1], [ACCESS, ALIGN_MUL, ALIGN_OFFSET, OFFSET_SHIFT], [CAN_ELIMINATE])
 # src[] = { buffer_index, offset }
-load("ssbo_address", [-1, 1], [], [CAN_ELIMINATE, CAN_REORDER])
+load("ssbo_address", [-1, 1], [ACCESS], [CAN_ELIMINATE, CAN_REORDER])
 # src[] = { offset }.
 load("output", [1], [BASE, RANGE, COMPONENT, DEST_TYPE, IO_SEMANTICS], flags=[CAN_ELIMINATE])
 # src[] = { offset }.

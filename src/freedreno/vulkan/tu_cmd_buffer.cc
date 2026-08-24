@@ -9306,6 +9306,11 @@ tu_CmdDrawIndirectByteCountEXT(VkCommandBuffer commandBuffer,
        * the vertexStride should also be in units of dwords.
        */
       vertexStride = vertexStride >> 2;
+   } else {
+      /* On a6xx only the offset is shifted right by 2, so scale it up to
+       * match the byte counter and stride.
+       */
+      counterOffset = counterOffset << 2;
    }
    tu_cs_emit(cs, instanceCount);
    tu_cs_emit_qw(cs, vk_buffer_address(&buf->vk, counterBufferOffset));

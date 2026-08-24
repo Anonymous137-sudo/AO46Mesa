@@ -18,9 +18,6 @@
 
 #include "bvh/anv_bvh_defines.h"
 #include "vk_acceleration_structure.h"
-#include "radix_sort/radix_sort_u64.h"
-#include "radix_sort/radix_sort_u96.h"
-#include "radix_sort/common/vk/barrier.h"
 
 #include "vk_common_entrypoints.h"
 #include "genX_mi_builder.h"
@@ -49,9 +46,6 @@ begin_debug_marker(VkCommandBuffer commandBuffer,
       break;
    case VK_ACCELERATION_STRUCTURE_BUILD_STEP_BUILD_LEAVES:
       trace_intel_begin_as_build_leaves(&cmd_buffer->trace);
-      break;
-   case VK_ACCELERATION_STRUCTURE_BUILD_STEP_MORTON_GENERATE:
-      trace_intel_begin_as_morton_generate(&cmd_buffer->trace);
       break;
    case VK_ACCELERATION_STRUCTURE_BUILD_STEP_MORTON_SORT:
       trace_intel_begin_as_morton_sort(&cmd_buffer->trace);
@@ -90,9 +84,6 @@ end_debug_marker(VkCommandBuffer commandBuffer,
       break;
    case VK_ACCELERATION_STRUCTURE_BUILD_STEP_BUILD_LEAVES:
       trace_intel_end_as_build_leaves(&cmd_buffer->trace);
-      break;
-   case VK_ACCELERATION_STRUCTURE_BUILD_STEP_MORTON_GENERATE:
-      trace_intel_end_as_morton_generate(&cmd_buffer->trace);
       break;
    case VK_ACCELERATION_STRUCTURE_BUILD_STEP_MORTON_SORT:
       trace_intel_end_as_morton_sort(&cmd_buffer->trace);
@@ -152,11 +143,11 @@ add_bvh_dump(struct anv_cmd_buffer *cmd_buffer,
    struct anv_address dst_addr = { .bo = bvh_dump->bo, .offset = 0 };
    struct anv_address src_addr = anv_address_from_u64(src);
 
-   vk_barrier_compute_w_to_compute_r(vk_command_buffer_to_handle(&cmd_buffer->vk));
+   vk_bvh_build_barrier_compute_to_compute(vk_command_buffer_to_handle(&cmd_buffer->vk), false);
    anv_cmd_copy_addr(cmd_buffer, src_addr, dst_addr, bvh_dump->dump_size);
 
    /* Add host barrier to read BVH data. */
-   vk_barrier_compute_w_to_host_r(vk_command_buffer_to_handle(&cmd_buffer->vk));
+   vk_bvh_build_barrier_compute_to_host(vk_command_buffer_to_handle(&cmd_buffer->vk));
    genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
 
    list_addtail(&bvh_dump->link, &cmd_buffer->bvh_dumps);
@@ -352,7 +343,7 @@ anv_get_build_config(VkDevice _device, struct vk_acceleration_structure_build_st
    if (state->build_info->type == VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR &&
        (state->build_info->mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR ||
         state->build_info->flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR ||
-        device->physical->instance->drirc.debug.write_lookup_maps_unconditionally)) {
+        device->physical->drirc.debug.write_lookup_maps_unconditionally)) {
       state->config.build_flags |= ANV_BUILD_FLAG_WRITE_LOOKUP_MAPS_FOR_UPDATE;
    }
 
@@ -420,7 +411,7 @@ anv_clear_out_bvh(struct anv_cmd_buffer *cmd_buffer,
 
    anv_cmd_buffer_fill_area(cmd_buffer, anv_bvh_addr, bvh_size, 0 /* data */);
 
-   vk_barrier_compute_w_to_compute_r(vk_command_buffer_to_handle(&cmd_buffer->vk));
+   vk_bvh_build_barrier_compute_to_compute(vk_command_buffer_to_handle(&cmd_buffer->vk), false);
    genX(cmd_buffer_apply_pipe_flushes)(cmd_buffer);
 }
 
@@ -609,7 +600,7 @@ anv_encode_as(VkCommandBuffer commandBuffer, struct vk_device *vk_device, struct
       return vk_errorf(&cmd_buffer->vk, VK_ERROR_OUT_OF_HOST_MEMORY,
                        "Failed to allocate batch buffer for AS encode");
    }
-   vk_barrier_compute_w_to_compute_r(vk_command_buffer_to_handle(&cmd_buffer->vk));
+   vk_bvh_build_barrier_compute_to_compute(commandBuffer, false);
 
    anv_bvh_build_bind_pipeline(commandBuffer, ANV_OBJECT_KEY_BVH_ENCODE, encode_spv,
                                sizeof(encode_spv), sizeof(struct encode_args), build_flags);
@@ -797,7 +788,7 @@ anv_update_as(VkCommandBuffer commandBuffer, struct vk_device *vk_device,
    }
 
    if (barrier_needed)
-      vk_barrier_compute_w_to_compute_r(commandBuffer);
+         vk_bvh_build_barrier_compute_to_compute(commandBuffer, false);
 
    for (uint32_t i = 0; i < build_count; i++) {
       struct vk_acceleration_structure_build_state *state = &states[i];
@@ -881,7 +872,7 @@ anv_encode(VkCommandBuffer commandBuffer, struct vk_device *device, struct vk_me
 
    if (has_update) {
       if (!flushed_compute_after_init_update_scratch) {
-         vk_barrier_compute_w_to_compute_r(commandBuffer);
+         vk_bvh_build_barrier_compute_to_compute(commandBuffer, false);
          flushed_compute = true;
       }
 
@@ -893,14 +884,14 @@ anv_encode(VkCommandBuffer commandBuffer, struct vk_device *device, struct vk_me
       return;
 
    if (!flushed_compute)
-      vk_barrier_compute_w_to_compute_r(commandBuffer);
-   
+      vk_bvh_build_barrier_compute_to_compute(commandBuffer, false);
+
    vk_build_stage(anv_encode_as, commandBuffer, device, meta, args, states, build_count, ANV_ENCODE_BUILD_FLAGS, false);
 
    /* Add a barrier to ensure the writes from encode.comp is ready to be
     * read by header.comp
     */
-   vk_barrier_compute_w_to_compute_r(commandBuffer);
+   vk_bvh_build_barrier_compute_to_compute(commandBuffer, false);
 
    vk_build_stage(anv_init_header, commandBuffer, device, meta, args, states, build_count, 0, false);
 }
@@ -923,58 +914,8 @@ anv_device_init_accel_struct_build_state(struct anv_device *device)
    VkResult result = VK_SUCCESS;
    simple_mtx_lock(&device->accel_struct_build.mutex);
 
-   if (device->accel_struct_build.radix_sort_64)
+   if (device->vk.as_build_ops == &anv_build_ops)
       goto exit;
-
-   const struct radix_sort_vk_target_config radix_sort_config64 = {
-      .keyval_dwords = 2,
-      .init = { .workgroup_size_log2 = 8, },
-      .fill = { .workgroup_size_log2 = 8, .block_rows = 8 },
-      .histogram = {
-         .workgroup_size_log2 = 8,
-         .subgroup_size_log2 = device->info->ver >= 20 ? 5 : 4,
-         .block_rows = 14,
-      },
-      .prefix = {
-         .workgroup_size_log2 = 8,
-         .subgroup_size_log2 = device->info->ver >= 20 ? 5 : 4,
-      },
-      .scatter = {
-         .workgroup_size_log2 = 8,
-         .subgroup_size_log2 = device->info->ver >= 20 ? 4 : 3,
-         .block_rows = 14,
-      },
-   };
-
-   const struct radix_sort_vk_target_config radix_sort_config96 = {
-      .keyval_dwords = 3,
-      .init = { .workgroup_size_log2 = 8, },
-      .fill = { .workgroup_size_log2 = 8, .block_rows = 8 },
-      .histogram = {
-         .workgroup_size_log2 = 8,
-         .subgroup_size_log2 = device->info->ver >= 20 ? 5 : 4,
-         .block_rows = 14,
-      },
-      .prefix = {
-         .workgroup_size_log2 = 8,
-         .subgroup_size_log2 = device->info->ver >= 20 ? 5 : 4,
-      },
-      .scatter = {
-         .workgroup_size_log2 = 8,
-         .subgroup_size_log2 = device->info->ver >= 20 ? 4 : 3,
-         .block_rows = 14,
-      },
-   };
-
-   device->accel_struct_build.radix_sort_64 =
-      vk_create_radix_sort_u64(anv_device_to_handle(device),
-                               &device->vk.alloc,
-                               VK_NULL_HANDLE, radix_sort_config64);
-
-   device->accel_struct_build.radix_sort_96 =
-      vk_create_radix_sort_u96(anv_device_to_handle(device),
-                               &device->vk.alloc,
-                               VK_NULL_HANDLE, radix_sort_config96);
 
    device->vk.as_build_ops = &anv_build_ops;
    device->vk.write_buffer_cp = anv_cmd_write_buffer_cp;
@@ -988,8 +929,8 @@ anv_device_init_accel_struct_build_state(struct anv_device *device)
          .has_update = true,
          .propagate_cull_flags = true,
          .subgroup_size = device->info->ver >= 20 ? 32 : 16,
-         .radix_sort_64 = device->accel_struct_build.radix_sort_64,
-         .radix_sort_96 = device->accel_struct_build.radix_sort_96,
+         .morton_sort_workgroup_size = 512,
+         .morton_sort_kvs_per_thread = 2,
          /* See struct anv_accel_struct_header from anv_bvh_defines.h
           */
          .bvh_bounds_offset = 0,

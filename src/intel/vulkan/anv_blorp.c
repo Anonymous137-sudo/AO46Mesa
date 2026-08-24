@@ -129,7 +129,7 @@ anv_device_init_blorp(struct anv_device *device)
       .use_unrestricted_depth_range =
          device->vk.enabled_extensions.EXT_depth_range_unrestricted,
       .use_cached_dynamic_states = true,
-      .enable_tbimr = device->physical->instance->drirc.debug.tbimr,
+      .enable_tbimr = device->physical->drirc.debug.tbimr,
    };
 
    blorp_init_brw(&device->blorp.context, device, &device->isl_dev,
@@ -184,7 +184,7 @@ anv_blorp_batch_init(struct anv_cmd_buffer *cmd_buffer,
     */
    flags |= BLORP_BATCH_EMIT_3DSTATE_VF;
 
-   if (!cmd_buffer->device->physical->instance->drirc.debug.vf_distribution)
+   if (!cmd_buffer->device->physical->drirc.debug.vf_distribution)
       flags |= BLORP_BATCH_DISABLE_VF_DISTRIBUTION;
 
    blorp_batch_init(&cmd_buffer->device->blorp.context, batch, cmd_buffer, flags);

@@ -728,6 +728,23 @@ zink_init_screen_caps(struct zink_screen *screen)
 
    u_init_pipe_screen_caps(&screen->base, screen->is_cpu ? 0 : 1);
 
+   /* Vulkan spec says the builtins count, so make GL count them towards
+    * link-failing.
+    *
+    * "The number of input and output locations available for a shader input or
+    *  output interface depend on the shader stage as described in Shader Input
+    *  and Output Locations.  All variables in both the built-in interface block
+    *  and the user-defined variable interface count against these limits."
+    *
+    * MESA_SHADER_TESS_CTRL is left as default, because that mask is the
+    * per-patch built-ins rather than fixed-function outputs, and the limit it
+    * applies to is maxTessellationControlPerVertexOutputComponents.
+    */
+   caps->ignored_output_varyings[MESA_SHADER_VERTEX] =
+   caps->ignored_output_varyings[MESA_SHADER_TESS_EVAL] =
+   caps->ignored_output_varyings[MESA_SHADER_GEOMETRY] =
+   caps->ignored_output_varyings[MESA_SHADER_MESH] = 0;
+
    caps->null_textures = screen->info.rb_image_feats.robustImageAccess;
    /* support OVR_multiview and OVR_multiview2 */
    caps->multiview = screen->info.feats11.multiview * 2;

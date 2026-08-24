@@ -396,9 +396,15 @@ fd6_emit_streamout(fd_cs &cs, struct fd6_emit *emit) assert_dt
       if (so->reset & (1 << i)) {
          assert(so->offsets[i] == 0);
 
+         /* The counter in offset_bo is maintained by the hardware in the
+          * units of VPC_SO_FLUSH_BASE, which are dwords on a6xx and bytes on
+          * a7xx, while VPC_SO_BUFFER_OFFSET is bytes on both.  Seed each of
+          * them in its own units.
+          */
          fd_pkt7(cs, CP_MEM_WRITE, 3)
             .add(A5XX_CP_MEM_WRITE_ADDR(offset_bo))
-            .add(target->base.buffer_offset);
+            .add(CHIP == A6XX ? target->base.buffer_offset >> 2
+                              : target->base.buffer_offset);
 
          fd_pkt4(cs, 1)
             .add(VPC_SO_BUFFER_OFFSET(CHIP, i,target->base.buffer_offset));

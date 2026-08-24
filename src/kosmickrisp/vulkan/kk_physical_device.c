@@ -30,7 +30,7 @@
 
 static void
 kk_get_device_extensions(const struct kk_instance *instance,
-                         const struct kk_env_settings *settings,
+                         const struct kk_physical_device *pdev,
                          struct vk_device_extension_table *ext)
 {
    *ext = (struct vk_device_extension_table){
@@ -76,7 +76,7 @@ kk_get_device_extensions(const struct kk_instance *instance,
       .EXT_buffer_device_address = true,
       .EXT_descriptor_indexing = true,
       .EXT_host_query_reset = true,
-      .EXT_sampler_filter_minmax = false,
+      .EXT_sampler_filter_minmax = pdev->info.gpu_apple_family >= 10,
       .EXT_scalar_block_layout = true,
       .EXT_separate_stencil_usage = true,
       .EXT_shader_viewport_index_layer = true,
@@ -206,6 +206,7 @@ kk_get_device_extensions(const struct kk_instance *instance,
 
 static void
 kk_get_device_features(
+   const struct kk_physical_device *pdev,
    const struct vk_device_extension_table *supported_extensions,
    struct vk_features *features)
 {
@@ -213,6 +214,7 @@ kk_get_device_features(
       /* Vulkan 1.0 */
       .alphaToOne = true,
       .depthBiasClamp = true,
+      .depthBounds = pdev->info.gpu_apple_family >= 10,
       .depthClamp = true,
       .drawIndirectFirstInstance = true,
       .dualSrcBlend = true,
@@ -280,6 +282,7 @@ kk_get_device_features(
       .imagelessFramebuffer = true,
       .multiDrawIndirect = true,
       .runtimeDescriptorArray = true,
+      .samplerFilterMinmax = supported_extensions->EXT_sampler_filter_minmax,
       .samplerMirrorClampToEdge = true,
       .scalarBlockLayout = true,
       .separateDepthStencilLayouts = true,
@@ -498,6 +501,8 @@ kk_get_device_features(
       .shaderBufferFloat32Atomics = true,
       .shaderBufferFloat32AtomicAdd = true,
       .shaderSharedFloat32Atomics = true,
+      .shaderSharedFloat32AtomicAdd =
+         pdev->info.msl_version >= MTL_LANGUAGE_VERSION_4_1,
 
       /* VK_EXT_vertex_attribute_robustness */
       .vertexAttributeRobustness = true,
@@ -508,9 +513,10 @@ kk_get_device_features(
 }
 
 static void
-kk_get_device_properties(const struct kk_physical_device *pdev,
-                         const struct kk_instance *instance,
-                         struct vk_properties *properties)
+kk_get_device_properties(
+   const struct kk_physical_device *pdev, const struct kk_instance *instance,
+   const struct vk_device_extension_table *supported_extensions,
+   struct vk_properties *properties)
 {
    VkSampleCountFlags sample_counts = pdev->info.supported_sample_counts;
 
@@ -726,8 +732,10 @@ kk_get_device_properties(const struct kk_physical_device *pdev,
       .maxDescriptorSetUpdateAfterBindSampledImages = KK_MAX_DESCRIPTORS,
       .maxDescriptorSetUpdateAfterBindStorageImages = KK_MAX_DESCRIPTORS,
       .maxDescriptorSetUpdateAfterBindInputAttachments = KK_MAX_DESCRIPTORS,
-      .filterMinmaxSingleComponentFormats = false,
-      .filterMinmaxImageComponentMapping = false,
+      .filterMinmaxSingleComponentFormats =
+         supported_extensions->EXT_sampler_filter_minmax,
+      .filterMinmaxImageComponentMapping =
+         supported_extensions->EXT_sampler_filter_minmax,
       .maxTimelineSemaphoreValueDifference = UINT64_MAX,
       .framebufferIntegerColorSampleCounts = sample_counts,
 
@@ -1037,6 +1045,13 @@ get_metal_limits(struct kk_physical_device *pdev)
    pdev->info.gpu_apple_family =
       mtl_device_get_gpu_apple_family(pdev->mtl_dev_handle);
 
+   /* Determine the supported MSL version based on the OS. The version used to
+    * compile determines what features are available. */
+   if (ns_is_os_version_at_least(27, 0, 0))
+      pdev->info.msl_version = MTL_LANGUAGE_VERSION_4_1;
+   else
+      pdev->info.msl_version = MTL_LANGUAGE_VERSION_4_0;
+
    /* See Metal Feature Set Tables. Note that for certain MSAA sample counts the
     * tile size will actually be restricted to a width and/or height of 16, but
     * we typically don't know the actual sample count when querying granularity
@@ -1123,13 +1138,13 @@ kk_enumerate_physical_devices(struct vk_instance *_instance)
       &dispatch_table, &wsi_physical_device_entrypoints, false);
 
    struct vk_device_extension_table supported_extensions;
-   kk_get_device_extensions(instance, &pdev->settings, &supported_extensions);
+   kk_get_device_extensions(instance, pdev, &supported_extensions);
 
    struct vk_features supported_features;
-   kk_get_device_features(&supported_extensions, &supported_features);
+   kk_get_device_features(pdev, &supported_extensions, &supported_features);
 
    struct vk_properties properties;
-   kk_get_device_properties(pdev, instance, &properties);
+   kk_get_device_properties(pdev, instance, &supported_extensions, &properties);
 
    properties.drmHasRender = false;
 

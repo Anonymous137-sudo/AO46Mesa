@@ -403,6 +403,9 @@ fn instr_fau_page(instr: &Instr) -> Option<u8> {
 }
 
 fn encode_flow(mut flow: FlowCtrl, arch: u8) -> FlowControlM {
+    // Encoded separately from the flow field.
+    flow.take_msg_slot_idx();
+
     if flow.take_end_shader() {
         assert!(flow == FlowCtrl::NONE);
         return FlowControlM::End;

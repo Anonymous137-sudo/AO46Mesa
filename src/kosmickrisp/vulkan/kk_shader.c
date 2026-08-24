@@ -1194,9 +1194,11 @@ kk_compile_compute_pipeline(struct kk_device *device,
                             uint32_t local_size_threads,
                             mtl_compute_pipeline_state **pipe)
 {
+   struct kk_physical_device *pdev = kk_device_physical(device);
+
    mtl_library *library = mtl_new_library(
-      device->mtl_compiler_handle, data->code, MTL_MATH_MODE_FAST,
-      MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST);
+      device->mtl_compiler_handle, data->code, pdev->info.msl_version,
+      MTL_MATH_MODE_FAST, MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST);
    if (library == NULL)
       return VK_ERROR_INVALID_SHADER_NV;
 
@@ -1416,6 +1418,8 @@ gather_graphics_pipeline_create_info(
 static VkResult
 kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
 {
+   struct kk_physical_device *pdev = kk_device_physical(device);
+
    VkResult result = VK_SUCCESS;
    struct kk_pipeline_handles *pipe = &vs->pipeline;
    mesa_shader_stage vs_stage = MESA_SHADER_VERTEX;
@@ -1440,8 +1444,8 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
 
    const struct msl_compile_data *vs_data = &vs->msl_data[vs_stage];
    mtl_library *vertex_library = mtl_new_library(
-      device->mtl_compiler_handle, vs_data->code, MTL_MATH_MODE_FAST,
-      MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST);
+      device->mtl_compiler_handle, vs_data->code, pdev->info.msl_version,
+      MTL_MATH_MODE_FAST, MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST);
    if (vertex_library == NULL)
       return VK_ERROR_INVALID_SHADER_NV;
 
@@ -1451,8 +1455,8 @@ kk_compile_graphics_pipeline(struct kk_device *device, struct kk_shader *vs)
 
    const struct msl_compile_data *fs_data = &vs->msl_data[MESA_SHADER_FRAGMENT];
    mtl_library *fragment_library = mtl_new_library(
-      device->mtl_compiler_handle, fs_data->code, MTL_MATH_MODE_FAST,
-      MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST);
+      device->mtl_compiler_handle, fs_data->code, pdev->info.msl_version,
+      MTL_MATH_MODE_FAST, MTL_MATH_FLOATING_POINT_FUNCTIONS_FAST);
    if (fragment_library == NULL) {
       result = VK_ERROR_INVALID_SHADER_NV;
       goto destroy_vertex;

@@ -2071,8 +2071,6 @@ VKAPI_ATTR void VKAPI_CALL lvp_DestroyDevice(
 {
    VK_FROM_HANDLE(lvp_device, device, _device);
 
-   lvp_device_finish_accel_struct_state(device);
-
    vk_meta_device_finish(&device->vk, &device->meta);
 
    util_dynarray_foreach(&device->bda_texture_handles, struct lp_texture_handle *, handle)

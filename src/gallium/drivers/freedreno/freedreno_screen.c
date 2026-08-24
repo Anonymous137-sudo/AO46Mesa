@@ -735,6 +735,21 @@ fd_init_screen_caps(struct fd_screen *screen)
       /* Up to 16 bytes are accelerated */
       caps->hw_clear_buffer_sizes = 1 | 2 | 4 | 8 | 16;
    }
+
+   /* All of the varying outputs go into the VPC, which counts towards our
+    * max_outputs cap.  We do skip this on 5xx, where the HW actually supports
+    * 128 (https://vulkan.gpuinfo.org/displayreport.php?id=2037#properties) but
+    * we only claim 64.
+    *
+    * MESA_SHADER_TESS_CTRL is left as default, because that mask is the
+    * per-patch built-ins rather than fixed-function outputs.
+    */
+   if (!is_a5xx(screen)) {
+      caps->ignored_output_varyings[MESA_SHADER_VERTEX] =
+         caps->ignored_output_varyings[MESA_SHADER_TESS_EVAL] =
+            caps->ignored_output_varyings[MESA_SHADER_GEOMETRY] =
+               caps->ignored_output_varyings[MESA_SHADER_MESH] = 0;
+   }
 }
 
 static const struct nir_shader_compiler_options *

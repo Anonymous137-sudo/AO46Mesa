@@ -2055,7 +2055,7 @@ anv_image_init(struct anv_device *device, struct anv_image *image,
       /* Workaround to disable XE2 CCS modifiers from drirc. */
       if (device->info->ver >= 20 &&
           image->vk.tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT &&
-          device->physical->instance->drirc.debug.disable_xe2_ccs_modifiers) {
+          device->physical->drirc.debug.disable_xe2_ccs_modifiers) {
          anv_perf_warn(VK_LOG_OBJS(&image->vk.base),
                        "Disabling aux: "
                        "drirc disable_xe2_drm_ccs_modifiers");

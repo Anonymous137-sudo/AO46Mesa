@@ -50,11 +50,8 @@ kk_get_image_plane_format_features(struct kk_physical_device *pdev,
 
    if (va_format->filter) {
       features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
-      features |=
-         VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_MINMAX_BIT; // TODO_KOSMICKRISP
-                                                              // Understand if
-                                                              // we want to
-                                                              // expose this
+      if (pdev->vk.supported_extensions.EXT_sampler_filter_minmax)
+         features |= VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_FILTER_MINMAX_BIT;
    }
 
    /* TODO: VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_DEPTH_COMPARISON_BIT */

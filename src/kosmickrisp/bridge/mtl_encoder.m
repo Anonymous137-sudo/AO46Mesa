@@ -347,6 +347,15 @@ mtl_set_depth_clip_mode(mtl_render_encoder *encoder,
 }
 
 void
+mtl_set_depth_test_bounds(mtl_render_encoder *encoder, float min, float max)
+{
+   @autoreleasepool {
+      id<MTL4RenderCommandEncoder> enc = (id<MTL4RenderCommandEncoder>)encoder;
+      [enc setDepthTestMinBound:min maxBound:max];
+   }
+}
+
+void
 mtl_set_vertex_amplification_count(mtl_render_encoder *encoder,
                                    uint32_t *layer_ids, uint32_t id_count)
 {

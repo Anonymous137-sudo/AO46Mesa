@@ -1728,6 +1728,10 @@ struct anv_physical_device {
        uint32_t mesh_control[3];
        uint32_t task_control[3];
     } gfx_default;
+
+    struct anv_drirc                            drirc;
+    struct hash_table_u64                      *shader_workarounds;
+    VkResult                                    drirc_status;
 };
 
 static inline const struct anv_va_range *
@@ -1846,12 +1850,6 @@ static inline bool anv_needs_printf_buffer(void)
 
 struct anv_instance {
     struct vk_instance                          vk;
-
-    struct anv_drirc                            drirc;
-
-    struct hash_table_u64                      *shader_workarounds;
-
-    VkResult                                    drirc_status;
 };
 
 VkResult anv_init_wsi(struct anv_physical_device *physical_device);
@@ -2858,8 +2856,6 @@ struct anv_device {
 
     struct {
        simple_mtx_t  mutex;
-       struct radix_sort_vk *radix_sort_64;
-       struct radix_sort_vk *radix_sort_96;
        struct vk_acceleration_structure_build_args build_args;
    } accel_struct_build;
 

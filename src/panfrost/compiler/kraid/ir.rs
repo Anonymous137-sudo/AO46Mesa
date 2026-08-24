@@ -1870,6 +1870,12 @@ impl Shader<'_> {
         self.validate();
         res
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.blocks.len() == 1
+            && self.blocks[0].instrs.len() == 1
+            && matches!(self.blocks[0].instrs[0].op, Op::Nop(_))
+    }
 }
 
 impl fmt::Display for Shader<'_> {

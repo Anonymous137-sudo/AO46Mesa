@@ -6,43 +6,6 @@ KHR-GL46.texture_lod_bias.texture_lod_bias_all,Fail
 
 # GL tests above, Vulkan tests below
 
-# New fails in 1.4.3.3
-dEQP-VK.transform_feedback.simple.draw_indirect_counter_offset_16,Fail
-dEQP-VK.transform_feedback.simple.draw_indirect_counter_offset_244,Fail
-dEQP-VK.transform_feedback.simple.draw_indirect_counter_offset_508,Fail
-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_16,Fail
-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_244,Fail
-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_508,Fail
-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_16,Fail
-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_244,Fail
-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_508,Fail
-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_multiview_counter_offset_16,Fail
-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_multiview_counter_offset_244,Fail
-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_multiview_counter_offset_508,Fail
-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_counter_offset_16,Fail
-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_counter_offset_244,Fail
-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_counter_offset_508,Fail
-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_multiview_counter_offset_16,Fail
-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_multiview_counter_offset_244,Fail
-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_multiview_counter_offset_508,Fail
-gmem-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_16,Fail
-gmem-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_244,Fail
-nobin-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_16,Fail
-nobin-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_244,Fail
-
-# New failures with VKCTS 1.4.4.0
-gmem-dEQP-VK.transform_feedback.simple.draw_indirect_counter_offset_16,Fail
-gmem-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_508,Fail
-gmem-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_244,Fail
-gmem-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_508,Fail
-gmem-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_multiview_counter_offset_508,Fail
-nobin-dEQP-VK.transform_feedback.simple.draw_indirect_counter_offset_16,Fail
-nobin-dEQP-VK.transform_feedback.simple.draw_indirect_multiview_counter_offset_508,Fail
-nobin-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_244,Fail
-nobin-dEQP-VK.transform_feedback.simple_fast_gpl.draw_indirect_counter_offset_508,Fail
-nobin-dEQP-VK.transform_feedback.simple_optimized_gpl.draw_indirect_multiview_counter_offset_508,Fail
-
-
 # Bad assumptions in piglit about layout of multiplanar formats,
 # it should use separate buffers per plane:
 spec@ext_image_dma_buf_import@ext_image_dma_buf_import-sample_yvu420,Fail

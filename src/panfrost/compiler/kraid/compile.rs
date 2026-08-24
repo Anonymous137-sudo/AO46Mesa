@@ -234,13 +234,18 @@ pub extern "C" fn kraid_compile_nir(
     // they've completed.
     pass!(s.assign_message_slots());
     pass!(s.mark_reconvergence());
+    pass!(s.opt_end());
 
-    info.stats = s.get_stats();
+    if !s.is_empty() {
+        info.stats = s.get_stats();
 
-    let bin = model.encode_shader(&s);
-    dynarray_append_vec(binary, bin);
+        let bin = model.encode_shader(&s);
+        dynarray_append_vec(binary, bin);
 
-    encode_no_psiz_variant(nir, &mut s, model.as_ref(), binary, info);
+        encode_no_psiz_variant(nir, &mut s, model.as_ref(), binary, info);
+    } else {
+        info.stats = pan_stats::default();
+    }
 
     write_back_info(&s.info, nir, info);
     unsafe { pan_shader_update_info(info, nir, inputs) };

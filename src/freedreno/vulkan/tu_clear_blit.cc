@@ -3813,6 +3813,10 @@ tu_CmdResolveImage2(VkCommandBuffer commandBuffer,
 
    ops->teardown(cmd, cs);
 
+   if (dst_image->lrz_layout.lrz_total_size) {
+      tu_disable_lrz<CHIP>(cmd, &cmd->cs, dst_image);
+   }
+
    trace_end_resolve_image(&cmd->trace, &cmd->cs);
 }
 TU_GENX(tu_CmdResolveImage2);

@@ -254,10 +254,7 @@ main(void)
       is_active = true;
 
    uint32_t id = is_active ? pack_ir_node_id(dst_offset, node_type) : VK_BVH_INVALID_NODE;
-   if (VK_TEST_BUILD_FLAG_64BIT_KEYS)
-      DEREF(INDEX(key64_id_pair, args.ids, primitive_id)).id = id;
-   else
-      DEREF(INDEX(key32_id_pair, args.ids, primitive_id)).id = id;
+   DEREF(INDEX(uint32_t, args.ids, primitive_id)) = id;
 
    uvec4 ballot = subgroupBallot(is_active);
    if (subgroupElect())

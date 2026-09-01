@@ -210,6 +210,13 @@ emit_sysvals(struct nir_to_msl_ctx *ctx, nir_shader *shader)
    unsigned i;
    BITSET_FOREACH_SET(i, shader->info.system_values_read, SYSTEM_VALUE_MAX) {
       const char *sysval;
+
+      /* These values describe interpolation instructions. Their Metal form
+       * is emitted by msl_interpolant_method and is not a stage argument. */
+      if (i >= SYSTEM_VALUE_BARYCENTRIC_PERSP_PIXEL &&
+          i <= SYSTEM_VALUE_BARYCENTRIC_PULL_MODEL)
+         continue;
+
       if (is_frag_with_post_depth_coverage && i == SYSTEM_VALUE_SAMPLE_MASK_IN)
          sysval = sysval_sample_mask_in_post_depth_coverage;
       else

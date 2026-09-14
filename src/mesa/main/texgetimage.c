@@ -1149,7 +1149,11 @@ teximage_error_check(struct gl_context *ctx,
     * GetTextureImage so that it happens before getting the texImage object.
     */
 
-   baseFormat = _mesa_get_format_base_format(texImage->TexFormat);
+   /* Validate against the format exposed by the texture image, not a wider
+    * physical fallback selected by the state tracker.  A depth-only image
+    * may be stored in depth/stencil hardware storage without making stencil
+    * a legal GetTexImage source component. */
+   baseFormat = texImage->_BaseFormat;
 
    /* Make sure the requested image format is compatible with the
     * texture's format.

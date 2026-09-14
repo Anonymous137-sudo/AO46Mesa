@@ -395,9 +395,55 @@ msl_ensure_vertex_position_output(nir_shader *nir)
 
    bool has_position_write =
       nir->info.outputs_written & BITFIELD64_BIT(VARYING_SLOT_POS);
+
+   /* Metal only accepts float4 for the raster position member.  Mesa may
+    * legally emit a partial store (for example gl_Position.xy); widen that
+    * store before the MSL output-struct reflection is generated. */
+   nir_function_impl *entrypoint = nir_shader_get_entrypoint(nir);
+   nir_foreach_block(block, entrypoint) {
+      nir_foreach_instr_safe(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+         nir_src *position_src = NULL;
+         switch (intr->intrinsic) {
+         case nir_intrinsic_store_output:
+         case nir_intrinsic_store_per_vertex_output:
+            if (nir_intrinsic_io_semantics(intr).location == VARYING_SLOT_POS)
+               position_src = &intr->src[0];
+            break;
+         case nir_intrinsic_store_deref: {
+            nir_deref_instr *deref = nir_src_as_deref(intr->src[0]);
+            nir_variable *var = nir_deref_instr_get_variable(deref);
+            if (var && (var->data.mode & nir_var_shader_out) &&
+                var->data.location == VARYING_SLOT_POS)
+               position_src = &intr->src[1];
+            break;
+         }
+         default:
+            break;
+         }
+
+         if (!position_src || !position_src->ssa ||
+             position_src->ssa->bit_size != 32 ||
+             position_src->ssa->num_components >= 4)
+            continue;
+
+         nir_builder b = nir_builder_at(nir_before_instr(instr));
+         nir_def *x = nir_channel(&b, position_src->ssa, 0);
+         nir_def *y = position_src->ssa->num_components > 1 ?
+            nir_channel(&b, position_src->ssa, 1) : nir_imm_float(&b, 0.0f);
+         nir_def *z = position_src->ssa->num_components > 2 ?
+            nir_channel(&b, position_src->ssa, 2) : nir_imm_float(&b, 0.0f);
+         nir_src_rewrite(position_src,
+                         nir_vec4(&b, x, y, z, nir_imm_float(&b, 1.0f)));
+         has_position_write = true;
+      }
+   }
+
    if (!has_position_write) {
       /* Write to position at the very end, consistent with sunk stores */
-      nir_function_impl *entrypoint = nir_shader_get_entrypoint(nir);
       nir_builder b = nir_builder_at(nir_after_impl(entrypoint));
 
       struct nir_io_semantics io_semantics = {
@@ -724,12 +770,14 @@ msl_nir_lower_cull_distance_fs(nir_shader *s, unsigned nr_distances)
    return nir_progress(true, b->impl, nir_metadata_control_flow);
 }
 
-/* Scalarize stores to CLIP_DIST* varyings */
+/* Scalarize all CLIP_DIST/CULL_DIST I/O. The separation pass handles both
+ * producer stores and consumer loads and requires each intrinsic to carry one
+ * component. */
 static bool
 scalarize_clip_cull_distance_filter(const nir_intrinsic_instr *intrin,
                                     UNUSED const void *_data)
 {
-   if (intrin->intrinsic != nir_intrinsic_store_output)
+   if (!nir_intrinsic_has_io_semantics(intrin))
       return false;
    nir_io_semantics semantics = nir_intrinsic_io_semantics(intrin);
    return semantics.location == VARYING_SLOT_CLIP_DIST0 ||
@@ -738,12 +786,48 @@ scalarize_clip_cull_distance_filter(const nir_intrinsic_instr *intrin,
           semantics.location == VARYING_SLOT_CULL_DIST1;
 }
 
+static bool
+has_separate_cull_distance_io(nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (!nir_intrinsic_has_io_semantics(intr))
+               continue;
+            nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
+            if (sem.location == VARYING_SLOT_CULL_DIST0 ||
+                sem.location == VARYING_SLOT_CULL_DIST1)
+               return true;
+         }
+      }
+   }
+   return false;
+}
+
 void
 msl_nir_lower_clip_cull_distance(nir_shader *nir, unsigned num_cull_distances)
 {
-   NIR_PASS(_, nir, nir_lower_io_to_scalar, nir_var_shader_out,
+   bool compact_arrays = nir->options->compact_arrays;
+   bool already_separated = has_separate_cull_distance_io(nir);
+
+   /* Compact clip/cull arrays can still be indexed dynamically by fragment
+    * and intermediate stages. Materialize direct I/O loads before assigning
+    * each scalar lane its final Metal stage location. The incoming OpenGL I/O
+    * still uses ordinary vec4 slots at this point. */
+   ((nir_shader_compiler_options *)nir->options)->compact_arrays = false;
+   NIR_PASS(_, nir, nir_lower_io_indirect_loads, nir_var_shader_in, false);
+   ((nir_shader_compiler_options *)nir->options)->compact_arrays = compact_arrays;
+   NIR_PASS(_, nir, nir_lower_io_to_scalar,
+            nir_var_shader_in | nir_var_shader_out,
             scalarize_clip_cull_distance_filter, NULL);
-   NIR_PASS(_, nir, nir_separate_merged_clip_cull_io);
+   if (!already_separated)
+      NIR_PASS(_, nir, nir_separate_merged_clip_cull_io);
+   NIR_PASS(_, nir, nir_lower_indirect_derefs_to_if_else_trees,
+            nir_var_function_temp, UINT32_MAX);
+   NIR_PASS(_, nir, nir_lower_vars_to_ssa);
    if (nir->info.stage == MESA_SHADER_FRAGMENT)
       NIR_PASS(_, nir, msl_nir_lower_cull_distance_fs, num_cull_distances);
    else

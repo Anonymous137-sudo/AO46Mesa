@@ -9,6 +9,7 @@
 #include "compiler/glsl_types.h"
 #include "nir.h"
 #include "nir_builder.h"
+#include "util/format/u_format.h"
 
 static const char *texture_dim(enum glsl_sampler_dim dim);
 static const char *tex_type_name(nir_alu_type ty);
@@ -25,6 +26,7 @@ struct static_image_info {
    enum glsl_sampler_dim dim;
    bool arrayed;
    nir_alu_type type;
+   bool has_data_type;
    enum gl_access_qualifier qualifiers;
    unsigned access;
 };
@@ -37,6 +39,8 @@ get_static_image_index(const nir_intrinsic_instr *intr, unsigned *index)
    case nir_intrinsic_image_store:
    case nir_intrinsic_image_atomic:
    case nir_intrinsic_image_atomic_swap:
+   case nir_intrinsic_image_size:
+   case nir_intrinsic_image_samples:
       break;
    default:
       return false;
@@ -56,11 +60,23 @@ get_static_image_type(const nir_intrinsic_instr *intr)
       return nir_intrinsic_dest_type(intr);
    if (nir_intrinsic_has_src_type(intr))
       return nir_intrinsic_src_type(intr);
-   if (nir_intrinsic_has_atomic_op(intr))
+   if (nir_intrinsic_has_atomic_op(intr)) {
+      /* Sign-independent NIR atomics use uint even on signed images. */
+      enum pipe_format format = nir_intrinsic_format(intr);
+      if (util_format_is_pure_sint(format))
+         return nir_type_int | intr->def.bit_size;
+      if (util_format_is_pure_uint(format))
+         return nir_type_uint | intr->def.bit_size;
       return nir_atomic_op_type(nir_intrinsic_atomic_op(intr)) |
              intr->def.bit_size;
+   }
 
-   return nir_type_uint32;
+   enum pipe_format format = nir_intrinsic_format(intr);
+   if (util_format_is_pure_sint(format))
+      return nir_type_int32;
+   if (util_format_is_pure_uint(format))
+      return nir_type_uint32;
+   return nir_type_float32;
 }
 
 static unsigned
@@ -69,6 +85,9 @@ get_static_image_access(const nir_intrinsic_instr *intr)
    switch (intr->intrinsic) {
    case nir_intrinsic_image_load:
       return STATIC_IMAGE_ACCESS_READ;
+   case nir_intrinsic_image_size:
+   case nir_intrinsic_image_samples:
+      return 0;
    case nir_intrinsic_image_store:
       return STATIC_IMAGE_ACCESS_WRITE;
    case nir_intrinsic_image_atomic:
@@ -100,17 +119,23 @@ emit_static_images(struct nir_to_msl_ctx *ctx, nir_shader *shader)
                continue;
 
             type = get_static_image_type(intr);
+            bool has_data_type = intr->intrinsic != nir_intrinsic_image_size &&
+                                 intr->intrinsic != nir_intrinsic_image_samples;
             info = &images[index];
             if (info->used) {
                assert(info->dim == nir_intrinsic_image_dim(intr));
                assert(info->arrayed == nir_intrinsic_image_array(intr));
-               assert(info->type == type);
+               if (info->has_data_type && has_data_type)
+                  assert(info->type == type);
+               else if (has_data_type)
+                  info->type = type;
             } else {
                info->used = true;
                info->dim = nir_intrinsic_image_dim(intr);
                info->arrayed = nir_intrinsic_image_array(intr);
                info->type = type;
             }
+            info->has_data_type |= has_data_type;
             info->qualifiers |= nir_intrinsic_access(intr);
             info->access |= get_static_image_access(intr);
          }
@@ -125,7 +150,7 @@ emit_static_images(struct nir_to_msl_ctx *ctx, nir_shader *shader)
       if (!info->used)
          continue;
 
-      access = info->access == STATIC_IMAGE_ACCESS_READ
+      access = info->access == 0 || info->access == STATIC_IMAGE_ACCESS_READ
                   ? "read"
                   : info->access == STATIC_IMAGE_ACCESS_WRITE ? "write"
                                                                : "read_write";
@@ -134,7 +159,8 @@ emit_static_images(struct nir_to_msl_ctx *ctx, nir_shader *shader)
                     : "";
       P(ctx, ",\n");
       P_IND(ctx, "texture%s%s<%s, access::%s%s> image_%u [[texture(%u)]]",
-            texture_dim(info->dim), info->arrayed ? "_array" : "",
+            info->dim == GLSL_SAMPLER_DIM_CUBE ? "2d" : texture_dim(info->dim),
+            (info->arrayed || info->dim == GLSL_SAMPLER_DIM_CUBE) ? "_array" : "",
             tex_type_name(info->type), access, coherent, index, index);
    }
 }
@@ -230,6 +256,38 @@ emit_sysvals(struct nir_to_msl_ctx *ctx, nir_shader *shader)
 static void
 emit_inputs(struct nir_to_msl_ctx *ctx, nir_shader *shader)
 {
+   nir_alu_type static_texture_types[64] = {0};
+   bool static_texture_has_sample_type[64] = {false};
+
+   /* Texture-size and level queries return integers regardless of the sampled
+    * element type.  Do not let an early textureSize() instruction declare a
+    * floating-point sampler as textureN<int>. */
+   nir_foreach_function_impl(impl, shader) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_tex)
+               continue;
+
+            nir_tex_instr *tex = nir_instr_as_tex(instr);
+            if (nir_tex_instr_src_index(tex, nir_tex_src_texture_handle) >= 0 ||
+                tex->texture_index >= ARRAY_SIZE(static_texture_types))
+               continue;
+
+            switch (tex->op) {
+            case nir_texop_txs:
+            case nir_texop_lod:
+            case nir_texop_query_levels:
+            case nir_texop_texture_samples:
+               break;
+            default:
+               static_texture_types[tex->texture_index] = tex->dest_type;
+               static_texture_has_sample_type[tex->texture_index] = true;
+               break;
+            }
+         }
+      }
+   }
+
    switch (shader->info.stage) {
    case MESA_SHADER_VERTEX:
       P_IND(ctx, "VertexIn in [[stage_in]],\n");
@@ -247,16 +305,15 @@ emit_inputs(struct nir_to_msl_ctx *ctx, nir_shader *shader)
          continue;
 
       P(ctx, ",\n");
-      P_IND(ctx, "constant Buffer &buf%u [[buffer(%u)]]", binding,
+      P_IND(ctx, "constant UboBuffer &ubo%u [[buffer(%u)]]", binding,
             ctx->static_ubo_first_buffer + binding - 1);
    }
    for (unsigned binding = 2; binding < 16; ++binding) {
       if (!(ctx->static_buffer_mask & (UINT16_C(1) << binding)))
          continue;
 
-      assert(!(ctx->static_ubo_mask & (UINT16_C(1) << binding)));
       P(ctx, ",\n");
-      P_IND(ctx, "constant Buffer &buf%u [[buffer(%u)]]", binding, binding);
+      P_IND(ctx, "constant RawBuffer &buf%u [[buffer(%u)]]", binding, binding);
    }
    bool emitted_static_textures[64] = { false };
    bool emitted_static_samplers[64] = { false };
@@ -278,7 +335,9 @@ emit_inputs(struct nir_to_msl_ctx *ctx, nir_shader *shader)
                } else {
                   P(ctx, "texture%s%s<%s>", texture_dim(tex->sampler_dim),
                     tex->is_array ? "_array" : "",
-                    tex_type_name(tex->dest_type));
+                    tex_type_name(static_texture_has_sample_type[tex->texture_index]
+                                     ? static_texture_types[tex->texture_index]
+                                     : nir_type_float32));
                }
                P(ctx, " tex_%u [[texture(%u)]]", tex->texture_index,
                  tex->texture_index);
@@ -309,11 +368,11 @@ emit_inputs(struct nir_to_msl_ctx *ctx, nir_shader *shader)
 }
 
 static const char *
-output_type(nir_shader *shader)
+output_type(struct nir_to_msl_ctx *ctx, nir_shader *shader)
 {
    switch (shader->info.stage) {
    case MESA_SHADER_VERTEX:
-      return "VertexOut";
+      return ctx->vertex_void_output ? "void" : "VertexOut";
    case MESA_SHADER_FRAGMENT:
       return "FragmentOut";
    default:
@@ -817,14 +876,17 @@ alu_to_msl(struct nir_to_msl_ctx *ctx, nir_alu_instr *instr)
    case nir_op_u2f32:
    case nir_op_i2i8:
    case nir_op_i2i16:
+   case nir_op_i2imp:
    case nir_op_i2i32:
    case nir_op_i2i64:
    case nir_op_f2i8:
    case nir_op_f2i16:
+   case nir_op_f2imp:
    case nir_op_f2i32:
    case nir_op_f2i64:
    case nir_op_f2u8:
    case nir_op_f2u16:
+   case nir_op_f2ump:
    case nir_op_f2u32:
    case nir_op_f2u64:
    case nir_op_u2u8:
@@ -832,6 +894,9 @@ alu_to_msl(struct nir_to_msl_ctx *ctx, nir_alu_instr *instr)
    case nir_op_u2u32:
    case nir_op_u2u64:
    case nir_op_f2f16:
+   case nir_op_f2fmp:
+   case nir_op_i2fmp:
+   case nir_op_u2fmp:
    case nir_op_f2f16_rtne:
    case nir_op_f2f32:
       alu_funclike(ctx, instr, msl_type_for_def(ctx->types, &instr->def));
@@ -885,6 +950,7 @@ texture_dim(enum glsl_sampler_dim dim)
    case GLSL_SAMPLER_DIM_1D:
       return "1d";
    case GLSL_SAMPLER_DIM_2D:
+   case GLSL_SAMPLER_DIM_RECT:
       return "2d";
    case GLSL_SAMPLER_DIM_3D:
       return "3d";
@@ -1027,6 +1093,13 @@ texture_src_coord_swizzle(struct nir_to_msl_ctx *ctx, nir_src *coord,
 static void
 image_coord_swizzle(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
 {
+   unsigned static_index;
+   if (nir_intrinsic_image_dim(instr) == GLSL_SAMPLER_DIM_CUBE &&
+       get_static_image_index(instr, &static_index)) {
+      /* NIR image coordinates use a flattened face/layer index in z. */
+      texture_src_coord_swizzle(ctx, &instr->src[1], 3, false, true);
+      return;
+   }
    unsigned comps = 0;
    bool is_array = nir_intrinsic_image_array(instr);
    bool is_cube = false;
@@ -1494,6 +1567,10 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
       uint32_t component = nir_intrinsic_component(instr);
       uint32_t location = io.location + idx;
 
+      bool bitcast = ctx->inputs_info[location].type !=
+                     nir_intrinsic_dest_type(instr);
+      if (bitcast)
+         P(ctx, "as_type<%s>(", msl_type_for_def(ctx->types, &instr->def));
       msl_input_name(ctx, location, component);
       if (ctx->inputs_info[location].uses_interpolant)
          msl_interpolant_method(ctx, &instr->src[0u]);
@@ -1502,6 +1579,8 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
          for (unsigned i = 0; i < instr->num_components; i++)
             P(ctx, "%c", "xyzw"[component + i]);
       }
+      if (bitcast)
+         P(ctx, ")");
       P(ctx, ";\n");
       break;
    }
@@ -1511,12 +1590,18 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
       uint32_t component = nir_intrinsic_component(instr);
       uint32_t location = io.location + idx;
 
+      bool bitcast = ctx->inputs_info[location].type !=
+                     nir_intrinsic_dest_type(instr);
+      if (bitcast)
+         P(ctx, "as_type<%s>(", msl_type_for_def(ctx->types, &instr->def));
       msl_input_name(ctx, location, component);
       if (instr->num_components < msl_input_num_components(ctx, location)) {
          P(ctx, ".");
          for (unsigned i = 0; i < instr->num_components; i++)
             P(ctx, "%c", "xyzw"[component + i]);
       }
+      if (bitcast)
+         P(ctx, ")");
       P(ctx, ";\n");
       break;
    }
@@ -1532,7 +1617,13 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
 
       nir_io_semantics io = nir_intrinsic_io_semantics(instr);
       bool needs_padding =
+         ctx->shader->info.stage == MESA_SHADER_FRAGMENT &&
          FRAG_RESULT_DATA0 <= io.location && io.location <= FRAG_RESULT_DATA7;
+      bool bitcast = !needs_padding &&
+                     ctx->outputs_info[io.location].type !=
+                        nir_intrinsic_dest_type(instr);
+      if (bitcast)
+         P(ctx, "as_type<%s>(", msl_type_for_def(ctx->types, &instr->def));
       if (needs_padding) {
          const char *type = tex_type_name(nir_intrinsic_dest_type(instr));
          uint32_t num_components =
@@ -1544,9 +1635,18 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
          }
       }
 
-      uint64_t output_mask = 1 << (io.location);
+      uint64_t output_mask = BITFIELD64_BIT(io.location);
       bool load_from_input = !(output_mask & ctx->shader->info.outputs_written);
-      msl_output_name(ctx, io.location, 0, load_from_input);
+      unsigned component = nir_intrinsic_component(instr);
+      msl_output_name(ctx, io.location, component, load_from_input);
+      if (!needs_padding &&
+          instr->num_components < msl_output_num_components(ctx, io.location)) {
+         P(ctx, ".");
+         for (unsigned i = 0; i < instr->num_components; i++)
+            P(ctx, "%c", "xyzw"[component + i]);
+      }
+      if (bitcast)
+         P(ctx, ")");
 
       if (needs_padding) {
          P(ctx, ")");
@@ -1575,6 +1675,13 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
                P(ctx, "%c", "xyzw"[component + i]);
       }
       P(ctx, " = ");
+      bool bitcast = ctx->outputs_info[location].type !=
+                     nir_intrinsic_src_type(instr);
+      if (bitcast) {
+         P(ctx, "as_type<");
+         msl_output_type(ctx, location, util_bitcount(write_mask));
+         P(ctx, ">(");
+      }
       src_to_msl(ctx, &instr->src[0]);
       if (num_components > 1u) {
          P(ctx, ".");
@@ -1582,6 +1689,8 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
             if ((write_mask >> i) & 1)
                P(ctx, "%c", "xyzw"[i]);
       }
+      if (bitcast)
+         P(ctx, ")");
       P(ctx, ";\n");
       break;
    }
@@ -1599,8 +1708,8 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
       unsigned binding = nir_src_as_uint(instr->src[0]);
       assert(binding == 0 ||
              (binding < 16 && (ctx->static_ubo_mask & (UINT16_C(1) << binding))));
-      P(ctx, "*((constant %s*)(((constant char *)&buf%u.contents[0]) + ", type,
-        binding);
+      P(ctx, "*((constant %s*)(((constant char *)&%s%u.contents[0]) + ", type,
+        binding == 0 ? "buf" : "ubo", binding);
       src_to_msl(ctx, &instr->src[1]);
       P(ctx, "));\n");
       break;
@@ -1868,6 +1977,31 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
       src_to_msl(ctx, &instr->src[0]);
       P(ctx, ".get_num_mip_levels();\n");
       break;
+   case nir_intrinsic_image_size: {
+      enum glsl_sampler_dim dim = nir_intrinsic_image_dim(instr);
+      bool arrayed = nir_intrinsic_image_array(instr);
+      P(ctx, "%s(", msl_type_for_def(ctx->types, &instr->def));
+      image_reference_to_msl(ctx, instr);
+      P(ctx, ".get_width()");
+      if (dim != GLSL_SAMPLER_DIM_1D && dim != GLSL_SAMPLER_DIM_BUF) {
+         P(ctx, ", ");
+         image_reference_to_msl(ctx, instr);
+         P(ctx, ".get_height()");
+      }
+      if (dim == GLSL_SAMPLER_DIM_3D || arrayed) {
+         P(ctx, ", ");
+         image_reference_to_msl(ctx, instr);
+         P(ctx, dim == GLSL_SAMPLER_DIM_3D ? ".get_depth()" : ".get_array_size()");
+         if (dim == GLSL_SAMPLER_DIM_CUBE)
+            P(ctx, " / 6u");
+      }
+      P(ctx, ");\n");
+      break;
+   }
+   case nir_intrinsic_image_samples:
+      image_reference_to_msl(ctx, instr);
+      P(ctx, ".get_num_samples();\n");
+      break;
    case nir_intrinsic_image_load:
    case nir_intrinsic_bindless_image_load:
       image_reference_to_msl(ctx, instr);
@@ -1900,26 +2034,32 @@ intrinsic_to_msl(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
       P(ctx, ");\n");
       break;
    case nir_intrinsic_image_atomic:
-   case nir_intrinsic_bindless_image_atomic:
+   case nir_intrinsic_bindless_image_atomic: {
+      const char *image_type = tex_type_name(get_static_image_type(instr));
+      P(ctx, "as_type<%s>(", msl_type_for_def(ctx->types, &instr->def));
       image_reference_to_msl(ctx, instr);
       P(ctx, ".%s(", atomic_op_to_msl(nir_intrinsic_atomic_op(instr)));
       image_coord_swizzle(ctx, instr);
-      P(ctx, ", ");
+      P(ctx, ", as_type<%s>(", image_type);
       src_to_msl(ctx, &instr->src[3]);
-      P(ctx, ").x;\n");
+      P(ctx, ")).x);\n");
       break;
+   }
    case nir_intrinsic_image_atomic_swap:
    case nir_intrinsic_bindless_image_atomic_swap: {
       const char *type = msl_type_for_def(ctx->types, &instr->def);
-      P_IND(ctx, "%s4 ta%d = ", type, instr->def.index);
+      const char *image_type = tex_type_name(get_static_image_type(instr));
+      P_IND(ctx, "%s4 ta%d = %s4(as_type<%s>(", image_type,
+            instr->def.index, image_type, image_type);
       src_to_msl(ctx, &instr->src[3]);
-      P(ctx, "; ");
+      P(ctx, ")); ");
       image_reference_to_msl(ctx, instr);
       P(ctx, ".%s(", atomic_op_to_msl(nir_intrinsic_atomic_op(instr)));
       image_coord_swizzle(ctx, instr);
-      P(ctx, ", &ta%d, ", instr->def.index);
+      P(ctx, ", &ta%d, as_type<%s>(", instr->def.index, image_type);
       src_to_msl(ctx, &instr->src[4]);
-      P(ctx, "); %s t%d = ta%d.x;\n", type, instr->def.index, instr->def.index);
+      P(ctx, ")); %s t%d = as_type<%s>(ta%d.x);\n", type,
+        instr->def.index, type, instr->def.index);
       break;
    }
    case nir_intrinsic_bindless_image_fence_kk: {
@@ -2114,6 +2254,7 @@ tex_to_msl(struct nir_to_msl_ctx *ctx, nir_tex_instr *tex)
       nir_src *min_lod_clamp = nir_tex_get_src(tex, nir_tex_src_min_lod);
       nir_src *offset = nir_tex_get_src(tex, nir_tex_src_offset);
       nir_src *comparator = nir_tex_get_src(tex, nir_tex_src_comparator);
+      P(ctx, "%s(", msl_type_for_def(ctx->types, &tex->def));
       texture_src_to_msl(ctx, tex, texhandle);
       if (comparator) {
          P(ctx, ".sample_compare(");
@@ -2153,28 +2294,33 @@ tex_to_msl(struct nir_to_msl_ctx *ctx, nir_tex_instr *tex)
          P(ctx, ", ");
          src_to_msl(ctx, offset);
       }
-      P(ctx, ");\n");
+      P(ctx, "));\n");
       break;
    }
    case nir_texop_txf: {
+      P(ctx, "%s(", msl_type_for_def(ctx->types, &tex->def));
       texture_src_to_msl(ctx, tex, texhandle);
       P(ctx, ".read(");
       tex_coord_swizzle(ctx, tex);
       nir_src *lod = nir_tex_get_src(tex, nir_tex_src_lod);
-      if (lod) {
+      /* Metal texture_buffer::read accepts only the integer element index.
+       * Gallium NIR may retain an explicit zero LOD on buffer fetches even
+       * though buffer textures have no mip levels. */
+      if (lod && tex->sampler_dim != GLSL_SAMPLER_DIM_BUF) {
          P(ctx, ", ");
          src_to_msl(ctx, lod);
       }
-      P(ctx, ");\n");
+      P(ctx, "));\n");
       break;
    }
    case nir_texop_txf_ms:
+      P(ctx, "%s(", msl_type_for_def(ctx->types, &tex->def));
       texture_src_to_msl(ctx, tex, texhandle);
       P(ctx, ".read(");
       tex_coord_swizzle(ctx, tex);
       P(ctx, ", ");
       src_to_msl(ctx, nir_tex_get_src(tex, nir_tex_src_ms_index));
-      P(ctx, ");\n");
+      P(ctx, "));\n");
       break;
    case nir_texop_txs: {
       nir_src *lod = nir_tex_get_src(tex, nir_tex_src_lod);
@@ -2468,7 +2614,8 @@ cf_node_to_metal(struct nir_to_msl_ctx *ctx, nir_cf_node *node)
 static void
 emit_output_return(struct nir_to_msl_ctx *ctx, nir_shader *shader)
 {
-   if (shader->info.stage == MESA_SHADER_VERTEX ||
+   if ((shader->info.stage == MESA_SHADER_VERTEX &&
+        !ctx->vertex_void_output) ||
        shader->info.stage == MESA_SHADER_FRAGMENT)
       P_IND(ctx, "return out;\n");
 }
@@ -2760,6 +2907,8 @@ predeclare_ssa_values(struct nir_to_msl_ctx *ctx, nir_function_impl *impl)
 char *
 nir_to_msl(nir_shader *shader, struct nir_to_msl_options *options)
 {
+   /* Late lowering can leave unused vector chains without a typed consumer. */
+   nir_opt_dce(shader);
    /* Need to rename the entrypoint here since hardcoded shaders used by vk_meta
     * don't go through the preprocess step since we are the ones creating them.
     */
@@ -2770,6 +2919,7 @@ nir_to_msl(nir_shader *shader, struct nir_to_msl_options *options)
       .text = _mesa_string_buffer_create(options->mem_ctx, 1024),
       .disabled_workarounds = options->disabled_workarounds,
       .use_static_sampler_bindings = options->use_static_sampler_bindings,
+      .vertex_void_output = options->vertex_void_output,
       .static_ubo_mask = options->static_ubo_mask,
       .static_ubo_first_buffer = options->static_ubo_first_buffer,
       .static_buffer_mask = options->static_buffer_mask,
@@ -2789,7 +2939,7 @@ nir_to_msl(nir_shader *shader, struct nir_to_msl_options *options)
        shader->info.fs.early_fragment_tests)
       P(&ctx, "[[early_fragment_tests]]\n");
    P(&ctx, "%s %s %s(\n", get_stage_string(shader->info.stage),
-     output_type(shader), get_entrypoint_name(shader));
+     output_type(&ctx, shader), get_entrypoint_name(shader));
    ctx.indentlevel++;
    emit_sysvals(&ctx, shader);
    emit_inputs(&ctx, shader);

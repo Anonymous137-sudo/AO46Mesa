@@ -280,6 +280,7 @@ static const char *FS_OUTPUT_SEMANTIC[] = {
 };
 
 const char *depth_layout_arg[8] = {
+   [FRAG_DEPTH_LAYOUT_NONE] = "any",
    [FRAG_DEPTH_LAYOUT_ANY] = "any",
    [FRAG_DEPTH_LAYOUT_GREATER] = "greater",
    [FRAG_DEPTH_LAYOUT_LESS] = "less",
@@ -460,6 +461,30 @@ struct gather_ctx {
    struct io_slot_info *output;
 };
 
+/* NIR storage can be bitwise/untyped, but Metal built-ins have fixed ABIs. */
+static void
+msl_varying_builtin_info(struct io_slot_info *info, unsigned location)
+{
+   switch (location) {
+   case VARYING_SLOT_POS:
+      info->type = nir_type_float32;
+      info->num_components = 4;
+      break;
+   case VARYING_SLOT_PSIZ:
+      info->type = nir_type_float32;
+      info->num_components = 1;
+      break;
+   case VARYING_SLOT_PRIMITIVE_ID:
+   case VARYING_SLOT_LAYER:
+   case VARYING_SLOT_VIEWPORT:
+      info->type = nir_type_uint32;
+      info->num_components = 1;
+      break;
+   default:
+      break;
+   }
+}
+
 static bool
 msl_nir_gather_io_info(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
 {
@@ -468,7 +493,6 @@ msl_nir_gather_io_info(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
    case nir_intrinsic_load_interpolated_input: {
       unsigned component = nir_intrinsic_component(intrin);
       struct nir_io_semantics io = nir_intrinsic_io_semantics(intrin);
-      assert(io.num_slots == 1u && "We don't support arrays");
 
       unsigned location = nir_src_as_uint(intrin->src[1u]) + io.location;
       ctx->input[location].type = nir_intrinsic_dest_type(intrin);
@@ -494,7 +518,6 @@ msl_nir_gather_io_info(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
    case nir_intrinsic_load_input: {
       unsigned component = nir_intrinsic_component(intrin);
       struct nir_io_semantics io = nir_intrinsic_io_semantics(intrin);
-      assert(io.num_slots == 1u && "We don't support arrays");
 
       unsigned location = nir_src_as_uint(intrin->src[0u]) + io.location;
       ctx->input[location].type = nir_intrinsic_dest_type(intrin);
@@ -509,7 +532,6 @@ msl_nir_gather_io_info(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
    case nir_intrinsic_load_output: {
       unsigned component = nir_intrinsic_component(intrin);
       struct nir_io_semantics io = nir_intrinsic_io_semantics(intrin);
-      assert(io.num_slots == 1u && "We don't support arrays");
 
       unsigned location = nir_src_as_uint(intrin->src[0u]) + io.location;
       ctx->output[location].type = nir_intrinsic_dest_type(intrin);
@@ -524,7 +546,6 @@ msl_nir_gather_io_info(nir_builder *b, nir_intrinsic_instr *intrin, void *data)
       unsigned component = nir_intrinsic_component(intrin);
       unsigned write_mask = nir_intrinsic_write_mask(intrin);
       struct nir_io_semantics io = nir_intrinsic_io_semantics(intrin);
-      assert(io.num_slots == 1u && "We don't support arrays");
 
       /* Due to nir_lower_blend that doesn't generate intrinsics with the same
        * num_components as destination, we need to compute current store's
@@ -563,6 +584,30 @@ msl_gather_io_info(struct nir_to_msl_ctx *ctx,
    };
    nir_shader_intrinsics_pass(ctx->shader, msl_nir_gather_io_info,
                               nir_metadata_all, &gather_ctx);
+
+   if (ctx->shader->info.stage == MESA_SHADER_VERTEX) {
+      u_foreach_bit64(location, ctx->shader->info.outputs_written |
+                               ctx->shader->info.outputs_read)
+         msl_varying_builtin_info(&info_array_output[location], location);
+   } else if (ctx->shader->info.stage == MESA_SHADER_FRAGMENT) {
+      u_foreach_bit64(location, ctx->shader->info.inputs_read)
+         msl_varying_builtin_info(&info_array_input[location], location);
+
+      info_array_output[FRAG_RESULT_DEPTH].type = nir_type_float32;
+      info_array_output[FRAG_RESULT_DEPTH].num_components = 1;
+      info_array_output[FRAG_RESULT_STENCIL].type = nir_type_uint32;
+      info_array_output[FRAG_RESULT_STENCIL].num_components = 1;
+      info_array_output[FRAG_RESULT_SAMPLE_MASK].type = nir_type_uint32;
+      info_array_output[FRAG_RESULT_SAMPLE_MASK].num_components = 1;
+   }
+}
+
+void
+msl_output_type(struct nir_to_msl_ctx *ctx, unsigned location,
+                unsigned num_components)
+{
+   P(ctx, "%s%s", alu_type_to_string(ctx->outputs_info[location].type),
+     vector_suffixes[num_components]);
 }
 
 /* Generate all the struct definitions needed for shader I/O */
@@ -572,7 +617,8 @@ msl_emit_io_blocks(struct nir_to_msl_ctx *ctx, nir_shader *shader)
    switch (ctx->shader->info.stage) {
    case MESA_SHADER_VERTEX:
       vs_input_block(shader, ctx);
-      vs_output_block(shader, ctx);
+      if (!ctx->vertex_void_output)
+         vs_output_block(shader, ctx);
       break;
    case MESA_SHADER_FRAGMENT:
       fs_input_block(shader, ctx);
@@ -593,6 +639,11 @@ msl_emit_io_blocks(struct nir_to_msl_ctx *ctx, nir_shader *shader)
    ctx->indentlevel--;
    P(ctx, "};\n")
 
+   /* Nonzero uniform and raw resource ranges are byte-addressed; their loads
+    * supply the actual data type and byte offset. */
+   P(ctx, "struct UboBuffer { uchar contents[1]; };\n");
+   P(ctx, "struct RawBuffer { uchar contents[1]; };\n");
+
    P(ctx, "struct SamplerTable {\n");
    ctx->indentlevel++;
    P_IND(ctx, "sampler handles[%d];\n", MSL_MAX_SAMPLERS);
@@ -605,7 +656,8 @@ msl_emit_output_var(struct nir_to_msl_ctx *ctx, nir_shader *shader)
 {
    switch (shader->info.stage) {
    case MESA_SHADER_VERTEX:
-      P_IND(ctx, "%s out = {};\n", VERTEX_OUTPUT_TYPE);
+      if (!ctx->vertex_void_output)
+         P_IND(ctx, "%s out = {};\n", VERTEX_OUTPUT_TYPE);
       break;
    case MESA_SHADER_FRAGMENT:
       P_IND(ctx, "%s out = {};\n", FRAGMENT_OUTPUT_TYPE);

@@ -24,6 +24,9 @@ struct nir_to_msl_options {
     */
    bool use_static_sampler_bindings;
 
+   /* Emit a side-effect-only vertex entry point for rasterizer discard. */
+   bool vertex_void_output;
+
    /* Immutable nonzero NIR UBO bindings emitted as public MSL buffers. */
    uint16_t static_ubo_mask;
    uint8_t static_ubo_first_buffer;

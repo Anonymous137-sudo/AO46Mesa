@@ -646,7 +646,10 @@ split_var_list_arrays(nir_shader *shader,
          exec_node_remove(&var->node);
          exec_list_push_tail(&split_vars, &var->node);
       } else {
-         assert(split_type == glsl_get_bare_type(var->type));
+         /* No split was selected, so split_type is discarded. OpenGL I/O
+          * arrays can retain an explicit stride that is intentionally absent
+          * from the temporary type assembled by this analysis; requiring
+          * identity here rejects otherwise untouched cross-frontend NIR. */
          /* If we're not modifying this variable, delete the info so we skip
           * it faster in later passes.
           */

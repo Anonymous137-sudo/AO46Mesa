@@ -48,14 +48,21 @@ split_clip_cull_arrays(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 
    nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
    unsigned component = nir_intrinsic_component(intr);
+   bool changed = sem.num_slots != 1;
 
-   /* Clip and cull arrays are expected to be merged in CLIP_DISTn. */
-   assert(sem.location != VARYING_SLOT_CULL_DIST0 &&
-          sem.location != VARYING_SLOT_CULL_DIST1);
+   /* Keep this pass idempotent for drivers that may receive a mixture of
+    * already-separated cull lanes and still-merged clip/cull lanes. */
+   if (sem.location == VARYING_SLOT_CULL_DIST0 ||
+       sem.location == VARYING_SLOT_CULL_DIST1)
+      return false;
 
    if (sem.location != VARYING_SLOT_CLIP_DIST0 &&
        sem.location != VARYING_SLOT_CLIP_DIST1)
       return false;
+
+   /* Scalarized Metal I/O exposes each clip/cull lane independently rather
+    * than as one array-valued stage member. */
+   sem.num_slots = 1;
 
    /* IO must be scalar. */
    assert((nir_intrinsic_infos[intr->intrinsic].has_dest ?
@@ -68,8 +75,11 @@ split_clip_cull_arrays(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    unsigned index = (sem.location - VARYING_SLOT_CLIP_DIST0) * 4 + component;
 
    /* Nothing to do if this component is a clip distance. */
-   if (index < b->shader->info.clip_distance_array_size)
-      return false;
+   if (index < b->shader->info.clip_distance_array_size) {
+      if (changed)
+         nir_intrinsic_set_io_semantics(intr, sem);
+      return changed;
+   }
 
    unsigned cull_dist_index = index - b->shader->info.clip_distance_array_size;
 

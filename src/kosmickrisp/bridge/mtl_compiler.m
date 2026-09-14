@@ -22,11 +22,11 @@ mtl_new_compiler(mtl_device *device)
 
       MTL4CompilerDescriptor *desc = [[MTL4CompilerDescriptor new] autorelease];
 
-      NSError *error;
+      NSError *error = nil;
       id<MTL4Compiler> compiler = [dev newCompilerWithDescriptor:desc error:&error];
 
       if (compiler == nil) {
-         fprintf(stderr, "Failed to create MTL4Compiler: %s\n", [error.localizedDescription UTF8String]);
+         fprintf(stderr, "Failed to create MTL4Compiler\n");
       }
 
       return compiler;
@@ -53,11 +53,11 @@ mtl_new_library(mtl_compiler *compiler, const char *src,
       desc.source = ns_src;
       desc.options = opts;
 
-      NSError *error;
+      NSError *error = nil;
       id<MTLLibrary> lib = [comp newLibraryWithDescriptor:desc error:&error];
 
       if (lib == nil) {
-         fprintf(stderr, "Failed to create MTLLibrary: %s\n", [error.localizedDescription UTF8String]);
+         fprintf(stderr, "Failed to create MTLLibrary\n");
       }
 
       return lib;
@@ -91,12 +91,12 @@ mtl_new_compute_pipeline_state(mtl_compiler *compiler,
       desc.computeFunctionDescriptor = (MTL4FunctionDescriptor *)function;
       desc.maxTotalThreadsPerThreadgroup = max_total_threads_per_threadgroup;
 
-      NSError *error;
+      NSError *error = nil;
       id<MTLComputePipelineState> pipeline = [comp newComputePipelineStateWithDescriptor:desc compilerTaskOptions:nil
                                                                                    error:&error];
 
       if (pipeline == nil) {
-         fprintf(stderr, "Failed to create MTLComputePipelineState: %s\n", [error.localizedDescription UTF8String]);
+         fprintf(stderr, "Failed to create MTLComputePipelineState\n");
       }
 
       return pipeline;
@@ -255,7 +255,7 @@ mtl_new_render_pipeline(mtl_compiler *compiler,
                                                                                  error:&error];
 
       if (pipeline == nil) {
-         fprintf(stderr, "Failed to create MTLRenderPipelineState: %s\n", [error.localizedDescription UTF8String]);
+         fprintf(stderr, "Failed to create MTLRenderPipelineState\n");
       }
 
       return pipeline;

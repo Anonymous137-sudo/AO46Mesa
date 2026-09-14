@@ -751,6 +751,15 @@ create_gs_rast_shader(const nir_shader *gs, const struct lower_gs_state *state)
       const char *slot_name =
          gl_varying_slot_name_for_stage(slot, MESA_SHADER_GEOMETRY);
 
+      /* DCE can remove the final store for an output while the conservative
+       * shader-info mask still contains its slot.  There is no value to copy
+       * in that case, and attempting to construct a temporary from the absent
+       * store's invalid type aborts during variant creation. */
+      if (output->type == nir_type_invalid || output->nr_components == 0) {
+         shader->info.outputs_written &= ~BITFIELD64_BIT(slot);
+         continue;
+      }
+
       enum glsl_base_type type =
          nir_get_glsl_base_type_for_nir_type(output->type);
 

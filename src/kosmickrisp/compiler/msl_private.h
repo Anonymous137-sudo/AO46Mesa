@@ -26,6 +26,7 @@ struct nir_to_msl_ctx {
    uint64_t disabled_workarounds;
    bool uses_per_draw_data;
    bool use_static_sampler_bindings;
+   bool vertex_void_output;
    uint16_t static_ubo_mask;
    uint8_t static_ubo_first_buffer;
    uint16_t static_buffer_mask;
@@ -77,6 +78,9 @@ void msl_input_name(struct nir_to_msl_ctx *ctx, unsigned location,
 
 void msl_output_name(struct nir_to_msl_ctx *ctx, unsigned location,
                      unsigned component, bool from_input);
+
+void msl_output_type(struct nir_to_msl_ctx *ctx, unsigned location,
+                     unsigned num_components);
 
 uint32_t msl_input_num_components(struct nir_to_msl_ctx *ctx,
                                   uint32_t location);

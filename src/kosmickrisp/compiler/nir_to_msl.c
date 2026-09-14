@@ -159,7 +159,10 @@ emit_static_images(struct nir_to_msl_ctx *ctx, nir_shader *shader)
                     : "";
       P(ctx, ",\n");
       P_IND(ctx, "texture%s%s<%s, access::%s%s> image_%u [[texture(%u)]]",
-            info->dim == GLSL_SAMPLER_DIM_CUBE ? "2d" : texture_dim(info->dim),
+            (info->dim == GLSL_SAMPLER_DIM_1D ||
+             info->dim == GLSL_SAMPLER_DIM_CUBE)
+               ? "2d"
+               : texture_dim(info->dim),
             (info->arrayed || info->dim == GLSL_SAMPLER_DIM_CUBE) ? "_array" : "",
             tex_type_name(info->type), access, coherent, index, index);
    }
@@ -1095,6 +1098,23 @@ static void
 image_coord_swizzle(struct nir_to_msl_ctx *ctx, nir_intrinsic_instr *instr)
 {
    unsigned static_index;
+   if (nir_intrinsic_image_dim(instr) == GLSL_SAMPLER_DIM_1D &&
+       get_static_image_index(instr, &static_index)) {
+      /* AO46 represents logical GL 1D images with Metal 2D textures. */
+      nir_src *coord = &instr->src[1];
+      P(ctx, "uint2(");
+      src_to_msl(ctx, coord);
+      if (coord->ssa->num_components > 1)
+         P(ctx, ".x");
+      P(ctx, ", 0u)");
+
+      if (nir_intrinsic_image_array(instr)) {
+         P(ctx, ", ");
+         round_src_component_to_uint(ctx, coord, 'y');
+      }
+      return;
+   }
+
    if (nir_intrinsic_image_dim(instr) == GLSL_SAMPLER_DIM_CUBE &&
        get_static_image_index(instr, &static_index)) {
       /* NIR image coordinates use a flattened face/layer index in z. */

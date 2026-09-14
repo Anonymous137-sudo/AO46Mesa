@@ -248,8 +248,8 @@ lvp_pipeline_layout_create(struct lvp_device *device,
                            const VkPipelineLayoutCreateInfo*           pCreateInfo,
                            const VkAllocationCallbacks*                pAllocator)
 {
-   struct lvp_pipeline_layout *layout = vk_pipeline_layout_zalloc(&device->vk, sizeof(*layout),
-                                                                  pCreateInfo);
+   struct lvp_pipeline_layout *layout = vk_pipeline_layout_zalloc(
+      &device->vk, sizeof(*layout), pCreateInfo, pAllocator);
 
    layout->push_constant_size = 0;
    for (unsigned i = 0; i < pCreateInfo->pushConstantRangeCount; ++i) {

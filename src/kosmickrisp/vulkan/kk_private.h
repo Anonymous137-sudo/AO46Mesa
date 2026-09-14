@@ -40,6 +40,21 @@
 
 #define KK_SPARSE_ADDR_SPACE_SIZE (1ull << 39)
 
+/* Vulkan 1.4 requires shaderFloatControls2. The NIR-to-MSL lowering covers
+ * the required signed-zero, infinity, and NaN preservation paths; the focused
+ * CTS group is the qualification gate for this advertised core version. */
+#define KK_MAX_API_VERSION VK_MAKE_VERSION(1, 4, VK_HEADER_VERSION)
+
+static inline uint32_t
+kk_get_api_version(void)
+{
+   const uint32_t version_override = vk_get_version_override();
+
+   return version_override && version_override < KK_MAX_API_VERSION
+             ? version_override
+             : KK_MAX_API_VERSION;
+}
+
 /* Max size of a bound cbuf */
 #define KK_MAX_CBUF_SIZE (1u << 16)
 

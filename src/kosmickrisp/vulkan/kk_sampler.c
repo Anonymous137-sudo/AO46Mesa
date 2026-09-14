@@ -208,9 +208,9 @@ kk_CreateSampler(VkDevice device, const VkSamplerCreateInfo *pCreateInfo,
          kk_DestroySampler(device, kk_sampler_to_handle(sampler), pAllocator);
          return result;
       }
-
       sampler->plane_count = 2;
 
+      /* Preserve the requested border for shader-side emulation. */
       /* We also need to record the border.
        *
        * If there is a border color component mapping, we need to swizzle with

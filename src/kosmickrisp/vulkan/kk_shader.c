@@ -22,6 +22,7 @@
 #include "kosmickrisp/compiler/nir_to_msl.h"
 
 #include "nir_builder.h"
+#include "nir_builtin_builder.h"
 #include "nir_lower_blend.h"
 
 #include "poly/nir/poly_nir.h"
@@ -791,6 +792,7 @@ kk_lower_nir(struct kk_device *dev, nir_shader *nir, bool emulated_stage,
     * generate a nir_intrinsic_load_blend_const_color_rgba which gets lowered by
     * the lower descriptor pass
     */
+   NIR_PASS(_, nir, kk_nir_lower_custom_border);
    NIR_PASS(_, nir, kk_nir_lower_descriptors, rs, set_layout_count,
             set_layouts);
 
@@ -1041,7 +1043,14 @@ kk_compile_shader(struct kk_device *dev, nir_shader *nir,
 
    NIR_PASS(_, nir, kk_nir_lower_poly);
 
+   if (KK_DEBUG(NIR))
+      nir_print_shader(nir, stderr);
+
    msl_optimize_nir(nir);
+
+   if (KK_DEBUG(NIR))
+      nir_print_shader(nir, stderr);
+
    modify_nir_info(nir);
 
    struct nir_to_msl_options translate_options = {

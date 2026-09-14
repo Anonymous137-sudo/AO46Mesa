@@ -86,6 +86,11 @@ struct vk_pipeline_layout {
     */
    void (*destroy)(struct vk_device *device,
                    struct vk_pipeline_layout *layout);
+
+   /* Layouts may outlive the application's Destroy call while pipelines still
+    * reference them.  Retain the allocation contract for final destruction. */
+   bool has_allocator;
+   VkAllocationCallbacks allocator;
 };
 
 VK_DEFINE_NONDISP_HANDLE_CASTS(vk_pipeline_layout, base, VkPipelineLayout,
@@ -93,7 +98,8 @@ VK_DEFINE_NONDISP_HANDLE_CASTS(vk_pipeline_layout, base, VkPipelineLayout,
 
 void *
 vk_pipeline_layout_zalloc(struct vk_device *device, size_t size,
-                          const VkPipelineLayoutCreateInfo *pCreateInfo);
+                          const VkPipelineLayoutCreateInfo *pCreateInfo,
+                          const VkAllocationCallbacks *pAllocator);
 
 void *
 vk_pipeline_layout_multizalloc(struct vk_device *device,
@@ -125,4 +131,3 @@ vk_pipeline_layout_unref(struct vk_device *device,
 #endif
 
 #endif /* VK_PIPELINE_LAYOUT_H */
-

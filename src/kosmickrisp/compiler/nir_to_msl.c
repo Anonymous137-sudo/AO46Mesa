@@ -2249,8 +2249,47 @@ nir_tex_get_src(struct nir_tex_instr *tex, nir_tex_src_type type)
 static void
 tex_coord_swizzle(struct nir_to_msl_ctx *ctx, nir_tex_instr *tex)
 {
-   texture_src_coord_swizzle(ctx, nir_tex_get_src(tex, nir_tex_src_coord),
-                             tex->coord_components, false, tex->is_array);
+   nir_src *coord = nir_tex_get_src(tex, nir_tex_src_coord);
+
+   if (tex->sampler_dim == GLSL_SAMPLER_DIM_RECT &&
+       tex->op != nir_texop_txf) {
+      /* Metal texture2d sampling is normalized, whereas GLSL rectangle
+       * samplers use pixel coordinates. Texel fetches remain unnormalized. */
+      P(ctx, "(");
+      texture_src_coord_swizzle(ctx, coord, tex->coord_components, false,
+                                tex->is_array);
+      P(ctx, " / float2(float(");
+      texture_src_to_msl(ctx, tex,
+                         nir_tex_get_src(tex, nir_tex_src_texture_handle));
+      P(ctx, ".get_width()), float(");
+      texture_src_to_msl(ctx, tex,
+                         nir_tex_get_src(tex, nir_tex_src_texture_handle));
+      P(ctx, ".get_height())))");
+      return;
+   }
+
+   texture_src_coord_swizzle(ctx, coord, tex->coord_components, false,
+                             tex->is_array);
+}
+
+static void
+tex_gradient_to_msl(struct nir_to_msl_ctx *ctx, nir_tex_instr *tex,
+                    nir_src *gradient)
+{
+   if (tex->sampler_dim == GLSL_SAMPLER_DIM_RECT) {
+      P(ctx, "(");
+      src_to_msl(ctx, gradient);
+      P(ctx, " / float2(float(");
+      texture_src_to_msl(ctx, tex,
+                         nir_tex_get_src(tex, nir_tex_src_texture_handle));
+      P(ctx, ".get_width()), float(");
+      texture_src_to_msl(ctx, tex,
+                         nir_tex_get_src(tex, nir_tex_src_texture_handle));
+      P(ctx, ".get_height())))");
+      return;
+   }
+
+   src_to_msl(ctx, gradient);
 }
 
 static void
@@ -2301,9 +2340,9 @@ tex_to_msl(struct nir_to_msl_ctx *ctx, nir_tex_instr *tex)
       }
       if (ddx) {
          P(ctx, ", gradient%s(", texture_dim(tex->sampler_dim));
-         src_to_msl(ctx, ddx);
+         tex_gradient_to_msl(ctx, tex, ddx);
          P(ctx, ", ");
-         src_to_msl(ctx, ddy);
+         tex_gradient_to_msl(ctx, tex, ddy);
          P(ctx, ")");
       }
       if (min_lod_clamp) {
